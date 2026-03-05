@@ -100,7 +100,7 @@ try {
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label text-muted">3. 條碼感應區 (Code 128)</label>
+                            <label class="form-label text-muted">3. 條碼感應區</label>
                             <div id="reader"></div>
                         </div>
                         <div id="scanResult" class="alert alert-secondary mt-3 text-center" style="display:none; font-size: 1.1em; font-weight: 500;">
@@ -266,7 +266,11 @@ try {
             }
         });
 
-        const html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: {width: 300, height: 100}, formatsToSupport: [ Html5QrcodeSupportedFormats.CODE_128 ] }, false);
+        const html5QrcodeScanner = new Html5QrcodeScanner("reader", { 
+            fps: 10, 
+            qrbox: { width: 250, height: 250 }, // 調整為正方形掃描框，符合 QR Code 比例
+            formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ] // 鎖定辨識二維碼以提升速度
+        }, false);
         let lastScannedCode = ''; let lastScanTime = 0;
 
         async function onScanSuccess(decodedText) {
