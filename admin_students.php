@@ -161,6 +161,21 @@ try {
         <div class="col-md-10 content-area">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>學生名單與分班管理</h2>
+                <div class="row mb-3 mt-4 g-2 align-items-center">
+                    <div class="col-auto">
+                        <select id="classFilter" class="form-select" style="min-width: 150px;">
+                            <option value="">顯示所有班級</option>
+                            <?php foreach ($classes as $class): ?>
+                                <option value="<?php echo htmlspecialchars($class['class_name']); ?>">
+                                    <?php echo htmlspecialchars($class['class_name']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="col">
+                        <input type="text" id="studentSearch" class="form-control" placeholder="輸入姓名或學號搜尋...">
+                    </div>
+                </div>
                 <div>
                     <span class="badge bg-secondary fs-6 me-2">當前期別：<?php echo htmlspecialchars($active_term_name); ?></span>
                     <button class="btn btn-primary" onclick="openStudentModal()">+ 新增/編輯學生</button>
@@ -291,6 +306,29 @@ try {
         document.getElementById('modal_class_id').value = class_id;
         studentModal.show();
     }
+    // 名單即時篩選邏輯
+    function filterTable() {
+        const classVal = document.getElementById('classFilter').value;
+        const searchVal = document.getElementById('studentSearch').value.toUpperCase();
+        const rows = document.querySelectorAll('tbody tr');
+
+        rows.forEach(row => {
+            // 確保不是「目前無資料」的提示列
+            if (row.cells.length < 5) return; 
+
+            const className = row.cells[0].textContent || row.cells[0].innerText;
+            const studentNo = row.cells[1].textContent || row.cells[1].innerText;
+            const studentName = row.cells[2].textContent || row.cells[2].innerText;
+
+            const isClassMatch = classVal === "" || className.includes(classVal);
+            const isSearchMatch = searchVal === "" || studentNo.includes(searchVal) || studentName.toUpperCase().includes(searchVal);
+
+            row.style.display = (isClassMatch && isSearchMatch) ? "" : "none";
+        });
+    }
+
+    document.getElementById('classFilter').addEventListener('change', filterTable);
+    document.getElementById('studentSearch').addEventListener('input', filterTable);
 </script>
 
 </body>

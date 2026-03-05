@@ -151,18 +151,36 @@ try {
         }
         setInterval(updateTime, 1000); updateTime();
 
+        // 頁面載入時初始化並讀取記憶設定
         document.addEventListener('DOMContentLoaded', async function() {
             try {
                 const response = await fetch('api_get_classes.php');
                 const result = await response.json();
                 const selector = document.getElementById('classSelector');
                 selector.innerHTML = '<option value="">請選擇班級...</option>';
+                
                 if (result.status === 'success') {
                     result.data.forEach(cls => {
                         selector.appendChild(new Option(cls.class_name, cls.id));
                     });
                 }
-            } catch (error) { console.error(error); }
+
+                // 讀取 localStorage 中的記憶設定
+                const savedWeek = localStorage.getItem('checkin_week');
+                const savedClass = localStorage.getItem('checkin_class');
+
+                if (savedWeek) {
+                    document.getElementById('weekSelector').value = savedWeek;
+                }
+                
+                if (savedClass) {
+                    selector.value = savedClass;
+                    // 若有記憶班級，自動載入名單
+                    loadStudentList(savedClass);
+                }
+            } catch (error) { 
+                console.error(error); 
+            }
         });
 
         async function loadStudentList(classId) {
@@ -199,15 +217,23 @@ try {
             } catch (error) { console.error(error); }
         }
 
-        // 當班級或週次改變時，重新載入名單
+        // 班級選擇改變時：儲存設定並載入名單
         document.getElementById('classSelector').addEventListener('change', function() {
-            if (this.value) loadStudentList(this.value);
-            else document.getElementById('studentListBody').innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">請先於左側選擇班級</td></tr>';
+            localStorage.setItem('checkin_class', this.value);
+            if (this.value) {
+                loadStudentList(this.value);
+            } else {
+                document.getElementById('studentListBody').innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">請先於左側選擇班級</td></tr>';
+            }
         });
         
+        // 週次選擇改變時：儲存設定並載入名單
         document.getElementById('weekSelector').addEventListener('change', function() {
+            localStorage.setItem('checkin_week', this.value);
             const classId = document.getElementById('classSelector').value;
-            if (classId) loadStudentList(classId);
+            if (classId) {
+                loadStudentList(classId);
+            }
         });
 
         document.getElementById('searchInput').addEventListener('keyup', function() {
