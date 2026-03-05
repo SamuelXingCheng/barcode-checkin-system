@@ -1,9 +1,7 @@
 <?php
 session_start();
 
-// 權限驗證：必須登入且角色為 super (總管理員)
 if (!isset($_SESSION['admin_id']) || $_SESSION['role'] !== 'super') {
-    // 若無權限，強制導向報到櫃台或登入頁
     header("Location: checkin.php");
     exit;
 }
@@ -12,48 +10,123 @@ require_once 'config.php';
 
 $active_term_name = '無啟用期別';
 $term_id = 0;
-$today_logs = [];
-$total_students = 0;
-$today_attended = 0;
+$logs = [];
+$base_students = 0;
+$attended_count = 0;
+$expected_attendances = 0;
+$attendance_rate = 0;
+
+// 自動計算當前週次 (與報到櫃台邏輯一致)
+$current_week = 1;
+$total_weeks = 1;
+$start_timestamp = 0;
 
 try {
-    // 1. 取得當前運行中的期別
-    $stmt = $pdo->query("SELECT id, term_name FROM terms WHERE is_active = 1 LIMIT 1");
+    $stmt = $pdo->query("SELECT id, term_name, start_date, total_weeks FROM terms WHERE is_active = 1 LIMIT 1");
     $active_term = $stmt->fetch();
     
     if ($active_term) {
         $term_id = $active_term['id'];
         $active_term_name = $active_term['term_name'];
+        $total_weeks = intval($active_term['total_weeks']);
 
-        // 2. 取得該期別的總學生數
-        $stmtTotal = $pdo->prepare("SELECT COUNT(*) FROM student_term_class WHERE term_id = :term_id");
-        $stmtTotal->execute([':term_id' => $term_id]);
-        $total_students = $stmtTotal->fetchColumn();
+        if (!empty($active_term['start_date'])) {
+            $start_timestamp = strtotime($active_term['start_date']);
+            $now_timestamp = time();
+            if ($now_timestamp >= $start_timestamp) {
+                $days_diff = floor(($now_timestamp - $start_timestamp) / 86400);
+                $current_week = floor($days_diff / 7) + 1;
+            }
+        }
+        if ($current_week > $total_weeks) $current_week = $total_weeks;
+        if ($current_week < 1) $current_week = 1;
 
-        // 3. 取得今日已報到人數
-        $stmtAttended = $pdo->prepare("SELECT COUNT(DISTINCT student_id) FROM barcode_checkin_log WHERE term_id = :term_id AND DATE(scan_time) = CURDATE()");
-        $stmtAttended->execute([':term_id' => $term_id]);
-        $today_attended = $stmtAttended->fetchColumn();
+        // 取得過濾條件 (預設顯示：所有班級、當前週次)
+        $filter_class_id = isset($_GET['class_id']) ? intval($_GET['class_id']) : 0;
+        $filter_week_no = isset($_GET['week_no']) ? intval($_GET['week_no']) : $current_week;
 
-        // 4. 取得今日報到詳細紀錄清單
+        // 1. 取得班級清單 (供下拉選單使用)
+        $stmtClasses = $pdo->query("SELECT id, class_name FROM classes ORDER BY id ASC");
+        $classes = $stmtClasses->fetchAll();
+
+        // 2. 計算母體總人數 (根據是否選擇班級)
+        $sqlTotal = "SELECT COUNT(*) FROM student_term_class WHERE term_id = :term_id";
+        $paramsTotal = [':term_id' => $term_id];
+        if ($filter_class_id > 0) {
+            $sqlTotal .= " AND class_id = :class_id";
+            $paramsTotal[':class_id'] = $filter_class_id;
+        }
+        $stmtTotal = $pdo->prepare($sqlTotal);
+        $stmtTotal->execute($paramsTotal);
+        $base_students = $stmtTotal->fetchColumn();
+
+        // 3. 計算出席人次與預期人次
+        if ($filter_week_no > 0) {
+            // 單週模式：預期人次 = 總人數，實際出席 = 該週有打卡的「不重複」人數
+            $expected_attendances = $base_students;
+            
+            $sqlAttended = "
+                SELECT COUNT(DISTINCT log.student_id) 
+                FROM barcode_checkin_log log 
+                INNER JOIN student_term_class stc ON log.student_id = stc.student_id AND log.term_id = stc.term_id
+                WHERE log.term_id = :term_id AND log.week_no = :week_no
+            ";
+            $paramsAttended = [':term_id' => $term_id, ':week_no' => $filter_week_no];
+            if ($filter_class_id > 0) {
+                $sqlAttended .= " AND stc.class_id = :class_id";
+                $paramsAttended[':class_id'] = $filter_class_id;
+            }
+        } else {
+            // 全學期模式 (week_no = 0)：預期人次 = 總人數 x 目前已進行的週次
+            $expected_attendances = $base_students * $current_week;
+            
+            $sqlAttended = "
+                SELECT COUNT(log.id) 
+                FROM barcode_checkin_log log 
+                INNER JOIN student_term_class stc ON log.student_id = stc.student_id AND log.term_id = stc.term_id
+                WHERE log.term_id = :term_id
+            ";
+            $paramsAttended = [':term_id' => $term_id];
+            if ($filter_class_id > 0) {
+                $sqlAttended .= " AND stc.class_id = :class_id";
+                $paramsAttended[':class_id'] = $filter_class_id;
+            }
+        }
+
+        $stmtAttended = $pdo->prepare($sqlAttended);
+        $stmtAttended->execute($paramsAttended);
+        $attended_count = $stmtAttended->fetchColumn();
+
+        // 結算出席率
+        if ($expected_attendances > 0) {
+            $attendance_rate = round(($attended_count / $expected_attendances) * 100, 1);
+        }
+
+        // 4. 取得詳細打卡紀錄清單
         $sqlLogs = "
             SELECT 
-                log.scan_time,
-                c.class_name,
-                s.student_no,
-                s.name,
-                s.meetinghall,
-                log.is_manual
+                log.scan_time, log.week_no, c.class_name, s.student_no, s.name, s.meetinghall, log.is_manual
             FROM barcode_checkin_log log
             INNER JOIN students s ON log.student_id = s.id
             INNER JOIN student_term_class stc ON s.id = stc.student_id AND log.term_id = stc.term_id
             INNER JOIN classes c ON stc.class_id = c.id
-            WHERE log.term_id = :term_id AND DATE(log.scan_time) = CURDATE()
-            ORDER BY log.scan_time DESC
+            WHERE log.term_id = :term_id
         ";
+        $paramsLogs = [':term_id' => $term_id];
+        
+        if ($filter_week_no > 0) {
+            $sqlLogs .= " AND log.week_no = :week_no";
+            $paramsLogs[':week_no'] = $filter_week_no;
+        }
+        if ($filter_class_id > 0) {
+            $sqlLogs .= " AND stc.class_id = :class_id";
+            $paramsLogs[':class_id'] = $filter_class_id;
+        }
+        
+        $sqlLogs .= " ORDER BY log.scan_time DESC";
         $stmtLogs = $pdo->prepare($sqlLogs);
-        $stmtLogs->execute([':term_id' => $term_id]);
-        $today_logs = $stmtLogs->fetchAll();
+        $stmtLogs->execute($paramsLogs);
+        $logs = $stmtLogs->fetchAll();
     }
 } catch (PDOException $e) {
     $error_msg = "資料庫讀取失敗：" . $e->getMessage();
@@ -63,17 +136,17 @@ try {
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>系統後台管理 | 班級報到系統</title>
+    <title>出席數據總覽 | 系統後台</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f4f6f9; font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: #f4f6f9; font-family: "Segoe UI", sans-serif; }
         .sidebar { min-height: 100vh; background-color: #343a40; color: white; padding-top: 20px; }
         .sidebar a { color: #adb5bd; text-decoration: none; display: block; padding: 10px 20px; margin-bottom: 5px; border-radius: 4px; }
         .sidebar a:hover, .sidebar a.active { background-color: #495057; color: white; }
         .content-area { padding: 30px; }
         .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 4px solid #0d6efd; }
         .stat-card.success { border-left-color: #198754; }
+        .stat-card.warning { border-left-color: #ffc107; }
     </style>
 </head>
 <body>
@@ -81,11 +154,11 @@ try {
 <div class="container-fluid p-0">
     <div class="row g-0">
         <div class="col-md-2 sidebar px-3">
-            <h5 class="px-2 mb-4">台中週中得勝班報到系統後台</h5>
-            <a href="admin.php">今日出勤總覽</a>
+            <h5 class="px-2 mb-4">得勝班報到系統後台</h5>
+            <a href="admin.php" class="active">出勤數據總覽</a>
             <a href="admin_students.php">學生名單管理</a>
-            <a href="#">期別與班級設定 (建置中)</a>
-            <a href="#">報表匯出 (建置中)</a>
+            <a href="admin_import.php">批次匯入名單</a>
+            <a href="admin_print_qrcode.php" target="_blank">列印 QR Code 貼紙</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>
@@ -93,42 +166,78 @@ try {
 
         <div class="col-md-10 content-area">
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2>今日出勤總覽</h2>
-                <span class="badge bg-primary fs-6">當前期別：<?php echo htmlspecialchars($active_term_name); ?></span>
+                <h2>出勤數據總覽</h2>
+                <span class="badge bg-secondary fs-6">當前期別：<?php echo htmlspecialchars($active_term_name); ?></span>
             </div>
 
             <?php if (isset($error_msg)): ?>
                 <div class="alert alert-danger"><?php echo htmlspecialchars($error_msg); ?></div>
             <?php endif; ?>
 
+            <div class="card shadow-sm border-0 mb-4 bg-light">
+                <div class="card-body">
+                    <form method="GET" action="admin.php" id="filterForm" class="row g-3 align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label text-muted">檢視班級</label>
+                            <select name="class_id" class="form-select" onchange="document.getElementById('filterForm').submit();">
+                                <option value="0">顯示全部班級</option>
+                                <?php foreach ($classes as $class): ?>
+                                    <option value="<?php echo $class['id']; ?>" <?php echo ($filter_class_id == $class['id']) ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars($class['class_name']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label text-muted">檢視期間</label>
+                            <select name="week_no" class="form-select" onchange="document.getElementById('filterForm').submit();">
+                                <option value="0" <?php echo ($filter_week_no == 0) ? 'selected' : ''; ?>>累計全學期 (依目前進度)</option>
+                                <?php for($i = 1; $i <= $total_weeks; $i++): ?>
+                                    <?php 
+                                        $date_str = "";
+                                        if ($start_timestamp > 0) {
+                                            $date_str = " (" . date("m/d", $start_timestamp + (($i - 1) * 7 * 86400)) . ")";
+                                        }
+                                        $label = ($i === $current_week) ? "第 {$i} 週{$date_str} 【本週】" : "第 {$i} 週{$date_str}";
+                                    ?>
+                                    <option value="<?php echo $i; ?>" <?php echo ($filter_week_no == $i) ? 'selected' : ''; ?>>
+                                        <?php echo $label; ?>
+                                    </option>
+                                <?php endfor; ?>
+                            </select>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
             <div class="row mb-4">
                 <div class="col-md-4">
                     <div class="stat-card">
-                        <h6 class="text-muted mb-2">本期註冊總人數</h6>
-                        <h3><?php echo $total_students; ?> 人</h3>
+                        <h6 class="text-muted mb-2">應到總人數 (選定範圍)</h6>
+                        <h3><?php echo $base_students; ?> 人</h3>
+                        <?php if ($filter_week_no == 0): ?>
+                            <small class="text-muted">全學期預期出席累計: <?php echo $expected_attendances; ?> 人次</small>
+                        <?php endif; ?>
                     </div>
                 </div>
                 <div class="col-md-4">
                     <div class="stat-card success">
-                        <h6 class="text-muted mb-2">今日已報到人數</h6>
-                        <h3><?php echo $today_attended; ?> 人</h3>
+                        <h6 class="text-muted mb-2"><?php echo ($filter_week_no == 0) ? '累計出席總人次' : '本週已出席人數'; ?></h6>
+                        <h3><?php echo $attended_count; ?> <?php echo ($filter_week_no == 0) ? '人次' : '人'; ?></h3>
                     </div>
                 </div>
                 <div class="col-md-4">
-                    <div class="stat-card" style="border-left-color: #6c757d;">
-                        <h6 class="text-muted mb-2">今日出席率</h6>
-                        <h3>
-                            <?php 
-                                echo $total_students > 0 ? round(($today_attended / $total_students) * 100, 1) . '%' : '0%'; 
-                            ?>
-                        </h3>
+                    <div class="stat-card warning">
+                        <h6 class="text-muted mb-2">整體出席率</h6>
+                        <h3><?php echo $attendance_rate; ?> %</h3>
                     </div>
                 </div>
             </div>
 
             <div class="card shadow-sm border-0">
-                <div class="card-header bg-white py-3">
-                    <h5 class="mb-0">今日即時報到紀錄</h5>
+                <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">打卡紀錄明細</h5>
+                    <small class="text-muted">共 <?php echo count($logs); ?> 筆紀錄</small>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
@@ -136,6 +245,7 @@ try {
                             <thead class="table-light">
                                 <tr>
                                     <th>打卡時間</th>
+                                    <th>週次</th>
                                     <th>班級</th>
                                     <th>學號</th>
                                     <th>姓名</th>
@@ -144,12 +254,13 @@ try {
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php if (count($today_logs) > 0): ?>
-                                    <?php foreach ($today_logs as $log): ?>
+                                <?php if (count($logs) > 0): ?>
+                                    <?php foreach ($logs as $log): ?>
                                         <tr>
                                             <td><?php echo htmlspecialchars($log['scan_time']); ?></td>
+                                            <td><span class="badge bg-secondary">第 <?php echo htmlspecialchars($log['week_no']); ?> 週</span></td>
                                             <td><?php echo htmlspecialchars($log['class_name']); ?></td>
-                                            <td><?php echo htmlspecialchars($log['student_no']); ?></td>
+                                            <td class="font-monospace"><?php echo htmlspecialchars($log['student_no']); ?></td>
                                             <td><?php echo htmlspecialchars($log['name']); ?></td>
                                             <td><?php echo htmlspecialchars($log['meetinghall']); ?></td>
                                             <td>
@@ -163,7 +274,7 @@ try {
                                     <?php endforeach; ?>
                                 <?php else: ?>
                                     <tr>
-                                        <td colspan="6" class="text-center py-4 text-muted">今日尚無任何報到紀錄</td>
+                                        <td colspan="7" class="text-center py-4 text-muted">此篩選條件下尚無任何報到紀錄</td>
                                     </tr>
                                 <?php endif; ?>
                             </tbody>
