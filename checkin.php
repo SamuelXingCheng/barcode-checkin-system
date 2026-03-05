@@ -39,7 +39,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>班級報到管理系統</title>
+    <title>台中週中得勝班報到系統</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://unpkg.com/html5-qrcode"></script>
     <style>
@@ -54,7 +54,7 @@ try {
 <body>
     <nav class="navbar navbar-dark bg-dark mb-4">
         <div class="container-fluid px-4">
-            <span class="navbar-brand mb-0 h1">班級報到管理系統</span>
+            <span class="navbar-brand mb-0 h1">台中週中得勝班報到系統</span>
             <div>
                 <span class="text-light me-3" id="systemTime"></span>
                 <span class="text-secondary me-3">|</span>

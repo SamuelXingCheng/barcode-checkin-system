@@ -81,8 +81,8 @@ try {
 <div class="container-fluid p-0">
     <div class="row g-0">
         <div class="col-md-2 sidebar px-3">
-            <h5 class="px-2 mb-4">報到系統後台</h5>
-            <a href="admin.php" class="active">今日出勤總覽</a>
+            <h5 class="px-2 mb-4">台中週中得勝班報到系統後台</h5>
+            <a href="admin.php">今日出勤總覽</a>
             <a href="admin_students.php">學生名單管理</a>
             <a href="#">期別與班級設定 (建置中)</a>
             <a href="#">報表匯出 (建置中)</a>

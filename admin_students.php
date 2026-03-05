@@ -25,79 +25,96 @@ try {
         $term_id = $active_term['id'];
         $active_term_name = $active_term['term_name'];
 
-        // 2. 處理表單送出 (新增或修改學生)
+        // 2. 處理表單送出 (新增、修改或刪除學生)
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            $student_no = trim($_POST['student_no'] ?? '');
-            $name = trim($_POST['name'] ?? '');
-            $meetinghall = trim($_POST['meetinghall'] ?? '');
-            $district = trim($_POST['district'] ?? '');
-            $class_id = intval($_POST['class_id'] ?? 0);
-
-            if (!empty($student_no) && !empty($name) && $class_id > 0) {
-                // 啟動資料庫交易 (Transaction) 以確保關聯資料一致性
-                $pdo->beginTransaction();
-
-                try {
-                    // 步驟 A：檢查學生主檔是否已存在此學號
-                    // 步驟 A：處理學生主檔 (自動產生學號或更新既有資料)
-                    $student_id = 0;
-
-                    if (!empty($student_no)) {
-                        // 情況一：有傳入學號，代表是「編輯既有學生」
-                        $stmtCheck = $pdo->prepare("SELECT id FROM students WHERE student_no = :student_no LIMIT 1");
-                        $stmtCheck->execute([':student_no' => $student_no]);
-                        $existing_student = $stmtCheck->fetch();
-
-                        if ($existing_student) {
-                            $student_id = $existing_student['id'];
-                            $stmtUpdate = $pdo->prepare("UPDATE students SET name = :name, meetinghall = :meetinghall, district = :district WHERE id = :id");
-                            $stmtUpdate->execute([':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district, ':id' => $student_id]);
-                        }
-                    } else {
-                        // 情況二：未傳入學號，代表是「新增學生」，系統需自動產生學號
-                        // 抓取目前最大的學號數字 (假設格式皆為 S 開頭加上數字)
-                        $stmtMax = $pdo->query("SELECT MAX(CAST(SUBSTRING(student_no, 2) AS UNSIGNED)) FROM students");
-                        $max_num = $stmtMax->fetchColumn();
+            
+            // 判斷是否為「刪除」操作
+            if (isset($_POST['action']) && $_POST['action'] === 'delete') {
+                $delete_id = intval($_POST['delete_student_id']);
+                if ($delete_id > 0) {
+                    $pdo->beginTransaction();
+                    try {
+                        // 依序刪除：打卡紀錄 -> 分班紀錄 -> 學生主檔，以符合關聯限制
+                        $pdo->prepare("DELETE FROM barcode_checkin_log WHERE student_id = ?")->execute([$delete_id]);
+                        $pdo->prepare("DELETE FROM student_term_class WHERE student_id = ?")->execute([$delete_id]);
+                        $pdo->prepare("DELETE FROM students WHERE id = ?")->execute([$delete_id]);
                         
-                        // 若資料庫全空，則從 1001 開始；否則取最大值加 1
-                        $next_num = $max_num ? ($max_num + 1) : 1001;
-                        $new_student_no = 'S' . $next_num;
-
-                        $stmtInsert = $pdo->prepare("INSERT INTO students (student_no, name, meetinghall, district) VALUES (:student_no, :name, :meetinghall, :district)");
-                        $stmtInsert->execute([':student_no' => $new_student_no, ':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district]);
-                        $student_id = $pdo->lastInsertId();
+                        $pdo->commit();
+                        $message = "該學生資料及其出勤紀錄已永久刪除。";
+                        $message_type = "success";
+                    } catch (Exception $e) {
+                        $pdo->rollBack();
+                        $message = "刪除失敗：" . $e->getMessage();
+                        $message_type = "danger";
                     }
-
-                    if ($student_id === 0) {
-                        throw new Exception("學生主檔處理失敗。");
-                    }
-
-                    // 步驟 B：處理分班表 (student_term_class)
-                    $stmtCheckClass = $pdo->prepare("SELECT id FROM student_term_class WHERE student_id = :student_id AND term_id = :term_id LIMIT 1");
-                    $stmtCheckClass->execute([':student_id' => $student_id, ':term_id' => $term_id]);
-                    
-                    if ($stmtCheckClass->fetch()) {
-                        // 已在本期別：更新班級
-                        $stmtUpdateClass = $pdo->prepare("UPDATE student_term_class SET class_id = :class_id WHERE student_id = :student_id AND term_id = :term_id");
-                        $stmtUpdateClass->execute([':class_id' => $class_id, ':student_id' => $student_id, ':term_id' => $term_id]);
-                    } else {
-                        // 尚未加入本期別：新增分班紀錄
-                        $stmtInsertClass = $pdo->prepare("INSERT INTO student_term_class (student_id, term_id, class_id) VALUES (:student_id, :term_id, :class_id)");
-                        $stmtInsertClass->execute([':student_id' => $student_id, ':term_id' => $term_id, ':class_id' => $class_id]);
-                    }
-
-                    $pdo->commit();
-                    $message = "學生資料儲存成功。";
-                    $message_type = "success";
-
-                } catch (Exception $e) {
-                    $pdo->rollBack();
-                    $message = "資料儲存失敗：" . $e->getMessage();
-                    $message_type = "danger";
                 }
-            } else {
-                $message = "學號、姓名與班級為必填欄位。";
-                $message_type = "warning";
+            } 
+            // 否則為「新增/修改」操作
+            else {
+                $student_no = trim($_POST['student_no'] ?? '');
+                $name = trim($_POST['name'] ?? '');
+                $meetinghall = trim($_POST['meetinghall'] ?? '');
+                $district = trim($_POST['district'] ?? '');
+                $class_id = intval($_POST['class_id'] ?? 0);
+
+                if (!empty($name) && $class_id > 0) {
+                    $pdo->beginTransaction();
+                    try {
+                        $student_id = 0;
+
+                        if (!empty($student_no)) {
+                            // 編輯既有學生
+                            $stmtCheck = $pdo->prepare("SELECT id FROM students WHERE student_no = :student_no LIMIT 1");
+                            $stmtCheck->execute([':student_no' => $student_no]);
+                            $existing_student = $stmtCheck->fetch();
+
+                            if ($existing_student) {
+                                $student_id = $existing_student['id'];
+                                $stmtUpdate = $pdo->prepare("UPDATE students SET name = :name, meetinghall = :meetinghall, district = :district WHERE id = :id");
+                                $stmtUpdate->execute([':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district, ':id' => $student_id]);
+                            }
+                        } else {
+                            // 新增學生 (自動產生學號)
+                            $stmtMax = $pdo->query("SELECT MAX(CAST(SUBSTRING(student_no, 2) AS UNSIGNED)) FROM students");
+                            $max_num = $stmtMax->fetchColumn();
+                            
+                            $next_num = $max_num ? ($max_num + 1) : 1001;
+                            $new_student_no = 'S' . $next_num;
+
+                            $stmtInsert = $pdo->prepare("INSERT INTO students (student_no, name, meetinghall, district) VALUES (:student_no, :name, :meetinghall, :district)");
+                            $stmtInsert->execute([':student_no' => $new_student_no, ':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district]);
+                            $student_id = $pdo->lastInsertId();
+                        }
+
+                        if ($student_id === 0) {
+                            throw new Exception("學生主檔處理失敗。");
+                        }
+
+                        // 處理分班表
+                        $stmtCheckClass = $pdo->prepare("SELECT id FROM student_term_class WHERE student_id = :student_id AND term_id = :term_id LIMIT 1");
+                        $stmtCheckClass->execute([':student_id' => $student_id, ':term_id' => $term_id]);
+                        
+                        if ($stmtCheckClass->fetch()) {
+                            $stmtUpdateClass = $pdo->prepare("UPDATE student_term_class SET class_id = :class_id WHERE student_id = :student_id AND term_id = :term_id");
+                            $stmtUpdateClass->execute([':class_id' => $class_id, ':student_id' => $student_id, ':term_id' => $term_id]);
+                        } else {
+                            $stmtInsertClass = $pdo->prepare("INSERT INTO student_term_class (student_id, term_id, class_id) VALUES (:student_id, :term_id, :class_id)");
+                            $stmtInsertClass->execute([':student_id' => $student_id, ':term_id' => $term_id, ':class_id' => $class_id]);
+                        }
+
+                        $pdo->commit();
+                        $message = "學生資料儲存成功。";
+                        $message_type = "success";
+
+                    } catch (Exception $e) {
+                        $pdo->rollBack();
+                        $message = "資料儲存失敗：" . $e->getMessage();
+                        $message_type = "danger";
+                    }
+                } else {
+                    $message = "姓名與班級為必填欄位。";
+                    $message_type = "warning";
+                }
             }
         }
 
@@ -153,6 +170,8 @@ try {
             <a href="admin_students.php" class="active">學生名單管理</a>
             <a href="#">期別與班級設定 (建置中)</a>
             <a href="#">報表匯出 (建置中)</a>
+            <a href="admin_import.php">批次匯入名單</a>
+            <a href="admin_print_qrcode.php" target="_blank">列印 QR Code 貼紙</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>
@@ -213,10 +232,15 @@ try {
                                             <td><?php echo htmlspecialchars($student['meetinghall']); ?></td>
                                             <td><?php echo htmlspecialchars($student['district']); ?></td>
                                             <td>
-                                                <button class="btn btn-sm btn-outline-secondary" 
+                                                <button class="btn btn-sm btn-outline-secondary me-1" 
                                                     onclick="editStudent('<?php echo $student['student_no']; ?>', '<?php echo $student['name']; ?>', '<?php echo $student['meetinghall']; ?>', '<?php echo $student['district']; ?>', '<?php echo $student['class_id']; ?>')">
-                                                    編輯資料
+                                                    編輯
                                                 </button>
+                                                <form method="POST" action="admin_students.php" style="display:inline;" onsubmit="return confirm('警告：確定要永久刪除【<?php echo htmlspecialchars($student['name']); ?>】嗎？\n這將會一併刪除該學生的所有出勤紀錄且無法復原！');">
+                                                    <input type="hidden" name="action" value="delete">
+                                                    <input type="hidden" name="delete_student_id" value="<?php echo $student['student_id']; ?>">
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger">刪除</button>
+                                                </form>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>

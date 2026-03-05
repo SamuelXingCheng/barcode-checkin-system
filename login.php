@@ -46,7 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>系統登入 | 班級報到管理系統</title>
+    <title>系統登入 | 台中市召會 得勝班報到管理系統</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { background-color: #f4f6f9; font-family: "Segoe UI", sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
@@ -58,7 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <div class="card login-card">
     <div class="login-header">
-        <h4 class="mb-0">班級報到管理系統</h4>
+        <h4 class="mb-0">週中得勝班報到系統</h4>
     </div>
     <div class="card-body p-4">
         <?php if ($error_msg): ?>
