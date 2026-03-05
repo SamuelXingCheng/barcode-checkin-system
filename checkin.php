@@ -71,12 +71,11 @@ try {
                     <div class="card-header bg-primary text-white">操作設定與掃描區</div>
                     <div class="card-body">
                         <div class="row mb-4">
-                            <div class="col-md-6">
+                            <div class="col-12 mb-3">
                                 <label for="weekSelector" class="form-label text-muted">1. 選擇報到週次</label>
-                                <select id="weekSelector" class="form-select form-select-lg">
+                                <select id="weekSelector" class="form-select">
                                     <?php for($i = 1; $i <= $total_weeks; $i++): ?>
                                         <?php 
-                                            // 計算該週的實際日期：開課日 + (當前迴圈週數 - 1) * 7天 * 24小時 * 60分 * 60秒
                                             $date_string = '';
                                             if ($start_timestamp > 0) {
                                                 $target_time = $start_timestamp + (($i - 1) * 7 * 86400);
@@ -89,9 +88,9 @@ try {
                                     <?php endfor; ?>
                                 </select>
                             </div>
-                            <div class="col-md-6">
+                            <div class="col-12">
                                 <label for="classSelector" class="form-label text-muted">2. 選擇操作班級</label>
-                                <select id="classSelector" class="form-select form-select-lg">
+                                <select id="classSelector" class="form-select">
                                     <option value="">資料載入中...</option>
                                 </select>
                             </div>

@@ -157,7 +157,6 @@ try {
             <?php if ($is_super): ?>
                 <a href="admin_import.php">批次匯入名單</a>
             <?php endif; ?>
-            <a href="admin_print_qrcode.php<?php echo $is_super ? '' : '?class_id=' . $admin_class_id; ?>" target="_blank" id="sidebarPrintBtn">列印 QR Code 貼紙</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>

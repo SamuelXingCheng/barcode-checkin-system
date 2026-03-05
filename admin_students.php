@@ -188,33 +188,41 @@ try {
                 <a href="admin_import.php">批次匯入名單</a>
                 <a href="#">期別與班級設定 (建置中)</a>
             <?php endif; ?>
-            <a href="admin_print_qrcode.php<?php echo $is_super ? '' : '?class_id=' . $admin_class_id; ?>" target="_blank" id="sidebarPrintBtn">列印 QR Code 貼紙</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>
         </div>
 
         <div class="col-md-10 content-area">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2>學生名單與分班管理</h2>
-                <div class="row mb-3 mt-4 g-2 align-items-center">
-                    <div class="col-auto">
-                        <select id="classFilter" class="form-select" style="min-width: 150px;">
-                            <option value="">顯示所有班級</option>
-                            <?php foreach ($classes as $class): ?>
-                                <option value="<?php echo htmlspecialchars($class['class_name']); ?>">
-                                    <?php echo htmlspecialchars($class['class_name']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="col">
-                        <input type="text" id="studentSearch" class="form-control" placeholder="輸入姓名或學號搜尋...">
-                    </div>
-                </div>
+            
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 class="mb-0">學生名單與分班管理</h2>
                 <div>
                     <span class="badge bg-secondary fs-6 me-2">當前期別：<?php echo htmlspecialchars($active_term_name); ?></span>
-                    <button class="btn btn-primary" onclick="openStudentModal()">+ 新增/編輯學生</button>
+                    <button type="button" class="btn btn-primary" onclick="openStudentModal()">+ 新增/編輯學生</button>
+                    <button type="button" class="btn btn-outline-dark me-2" onclick="printFilteredQRCodes()">列印 QR Code 貼紙</button>
+                </div>
+            </div>
+
+            <div class="card shadow-sm border-0 mb-4 bg-light">
+                <div class="card-body py-2 px-3">
+                    <div class="row g-2 align-items-center">
+                        <?php if ($is_super): ?>
+                        <div class="col-md-3">
+                            <select id="classFilter" class="form-select">
+                                <option value="">顯示所有班級</option>
+                                <?php foreach ($classes as $class): ?>
+                                    <option value="<?php echo htmlspecialchars($class['class_name']); ?>">
+                                        <?php echo htmlspecialchars($class['class_name']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <?php endif; ?>
+                        <div class="col">
+                            <input type="text" id="studentSearch" class="form-control" placeholder="輸入姓名或學號搜尋...">
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -352,9 +360,37 @@ try {
         document.getElementById('modal_class_id').value = class_id;
         studentModal.show();
     }
-    // 名單即時篩選邏輯
+    // 【新增】列印按鈕：點擊當下動態抓取搜尋條件，開啟新分頁
+    function printFilteredQRCodes() {
+        const classFilterElem = document.getElementById('classFilter');
+        const classVal = classFilterElem ? classFilterElem.value : '';
+        const searchVal = document.getElementById('studentSearch').value;
+        
+        // 從 PHP 讀取目前登入者的身分與班級 ID
+        const isSuper = <?php echo $is_super ? 'true' : 'false'; ?>;
+        const adminClassId = '<?php echo $admin_class_id; ?>';
+
+        // 動態組合 URL 參數
+        const params = new URLSearchParams();
+        
+        if (isSuper) {
+            // 總管理員：依據下拉選單的值傳遞班級名稱
+            if (classVal) params.append('class_name', classVal);
+        } else {
+            // 班級管理員：強制傳遞自己的班級 ID
+            params.append('class_id', adminClassId);
+        }
+        
+        if (searchVal) params.append('search', searchVal);
+
+        // 開啟列印頁面
+        window.open('admin_print_qrcode.php?' + params.toString(), '_blank');
+    }
+
+    // 名單即時篩選邏輯 (純粹控制畫面表格的顯示隱藏)
     function filterTable() {
-        const classVal = document.getElementById('classFilter').value;
+        const classFilterElem = document.getElementById('classFilter');
+        const classVal = classFilterElem ? classFilterElem.value : '';
         const searchVal = document.getElementById('studentSearch').value.toUpperCase();
         const rows = document.querySelectorAll('tbody tr');
 
@@ -370,16 +406,13 @@ try {
 
             row.style.display = (isClassMatch && isSearchMatch) ? "" : "none";
         });
-
-        // 👉 新增：將當前的篩選條件附加到列印按鈕的網址中
-        const printBtn = document.getElementById('printBtn');
-        if (printBtn) {
-            // 將搜尋條件進行 URL 編碼，避免特殊字元造成網址錯誤
-            printBtn.href = `admin_print_qrcode.php?class_name=${encodeURIComponent(classVal)}&search=${encodeURIComponent(searchVal)}`;
-        }
     }
 
-    document.getElementById('classFilter').addEventListener('change', filterTable);
+    // 綁定監聽器
+    const classFilterNode = document.getElementById('classFilter');
+    if (classFilterNode) {
+        classFilterNode.addEventListener('change', filterTable);
+    }
     document.getElementById('studentSearch').addEventListener('input', filterTable);
 </script>
 
