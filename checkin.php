@@ -1,3 +1,11 @@
+<?php
+session_start();
+// 檢查是否具備登入憑證
+if (!isset($_SESSION['admin_id'])) {
+    header("Location: login.php");
+    exit;
+}
+?>
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -33,7 +41,8 @@
             <span class="navbar-brand mb-0 h1">班級報到管理系統</span>
             <div>
                 <span class="text-light me-3" id="systemTime"></span>
-                <a href="#" class="btn btn-outline-light btn-sm">系統後台管理</a>
+                <span class="text-secondary me-3">|</span>
+                <a href="logout.php" class="btn btn-outline-danger btn-sm">登出系統</a>
             </div>
         </div>
     </nav>
