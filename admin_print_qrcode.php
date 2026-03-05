@@ -1,13 +1,11 @@
 <?php
 session_start();
 
-// 1. 檢查是否有登入
 if (!isset($_SESSION['admin_id'])) {
-    die("拒絕存取：請先登入系統。");
+    die("存取拒絕：請先登入系統。");
 }
 require_once 'config.php';
 
-// 2. 判斷身分與所屬班級
 $is_super = ($_SESSION['role'] === 'super');
 $admin_class_id = $_SESSION['class_id'] ?? 0;
 
@@ -22,10 +20,10 @@ try {
         $term_id = $active_term['id'];
         $active_term_name = $active_term['term_name'];
         
-        // 接收前端傳來的條件
         $filter_class_name = $_GET['class_name'] ?? '';
         $filter_search = $_GET['search'] ?? '';
         $filter_class_id = $_GET['class_id'] ?? 0;
+        $selected_nos = $_GET['selected'] ?? '';
 
         $sql = "
             SELECT s.student_no, s.name 
@@ -36,13 +34,10 @@ try {
         ";
         $params = [':term_id' => $term_id];
 
-        // 👉 最關鍵的防護：各班管理員強制鎖死自己的班級！
         if (!$is_super) {
             $sql .= " AND stc.class_id = :admin_class_id";
             $params[':admin_class_id'] = $admin_class_id;
-        } 
-        // 👉 總管理員才允許依照網址傳來的條件過濾
-        else {
+        } else {
             if ($filter_class_name !== '') {
                 $sql .= " AND c.class_name = :class_name";
                 $params[':class_name'] = $filter_class_name;
@@ -52,10 +47,22 @@ try {
             }
         }
 
-        // 姓名或學號搜尋條件 (所有人皆適用)
-        if ($filter_search !== '') {
-            $sql .= " AND (s.name LIKE :search OR s.student_no LIKE :search)";
-            $params[':search'] = '%' . $filter_search . '%';
+        if ($selected_nos !== '') {
+            $nos_array = array_filter(explode(',', $selected_nos));
+            if (!empty($nos_array)) {
+                $in_params = [];
+                foreach($nos_array as $idx => $no) {
+                    $key = ":sel_$idx";
+                    $in_params[] = $key;
+                    $params[$key] = trim($no);
+                }
+                $sql .= " AND s.student_no IN (" . implode(',', $in_params) . ")";
+            }
+        } else {
+            if ($filter_search !== '') {
+                $sql .= " AND (s.name LIKE :search OR s.student_no LIKE :search)";
+                $params[':search'] = '%' . $filter_search . '%';
+            }
         }
 
         $sql .= " ORDER BY s.student_no ASC";
@@ -64,31 +71,29 @@ try {
         $stmtStudents->execute($params);
         $students = $stmtStudents->fetchAll();
         
-        // 若查無資料，顯示提示
         if (count($students) === 0) {
-            die("<div style='text-align:center; padding:50px; font-family:sans-serif;'><h3>查無符合條件的學生名單，無法列印。</h3><button onclick='window.close()'>關閉視窗</button></div>");
+            die("<div style='text-align:center; padding:50px; font-family:sans-serif;'><h3>查無符合條件的資料，無法進行列印。</h3><button onclick='window.close()'>關閉視窗</button></div>");
         }
     } else {
-        die("系統尚未啟用任何期別。");
+        die("系統錯誤：尚未啟用任何期別設定。");
     }
 } catch (PDOException $e) {
-    die("資料庫錯誤：" . $e->getMessage());
+    die("資料庫執行異常：" . $e->getMessage());
 }
 ?>
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>高密度 QR Code 貼紙列印 | <?php echo htmlspecialchars($active_term_name); ?></title>
+    <title>標籤列印 | <?php echo htmlspecialchars($active_term_name); ?></title>
     <style>
-        body { font-family: "微軟正黑體", "Segoe UI", sans-serif; margin: 0; padding: 0; background-color: #e9ecef; }
-        .no-print { text-align: center; padding: 20px; background-color: #212529; color: white; margin-bottom: 20px; }
-        .no-print button { padding: 10px 20px; font-size: 16px; cursor: pointer; background-color: #0d6efd; color: white; border: none; border-radius: 4px; }
-        
-        /* A4 網格設定 */
+        body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f6f9; }
+        .no-print { text-align: center; padding: 15px; background-color: #343a40; color: white; margin-bottom: 20px; font-size: 14px; }
+        .no-print button { padding: 8px 16px; font-size: 14px; cursor: pointer; background-color: #0d6efd; color: white; border: none; border-radius: 4px; margin: 0 5px; }
+        .no-print button.secondary { background-color: #6c757d; }
         .a4-page {
             width: 210mm; min-height: 297mm; padding: 5mm; margin: 0 auto 20px auto;
-            background: white; box-shadow: 0 4px 12px rgba(0,0,0,0.15); box-sizing: border-box;
+            background: white; box-shadow: 0 4px 12px rgba(0,0,0,0.1); box-sizing: border-box;
             display: grid; grid-template-columns: repeat(5, 1fr); grid-auto-rows: 40.5mm; gap: 0;
             border-top: 1px solid #000; border-left: 1px solid #000;
         }
@@ -99,7 +104,6 @@ try {
         }
         .card-qr { width: 32mm; height: 32mm; object-fit: contain; margin-bottom: 1mm; }
         .card-text { font-size: 11px; font-weight: bold; color: #000; letter-spacing: 0.5px; white-space: nowrap; }
-        
         @media print {
             body { background-color: white; }
             .no-print { display: none !important; }
@@ -109,10 +113,10 @@ try {
 </head>
 <body>
     <div class="no-print">
-        <h2>高密度 QR Code 貼紙列印 (5x7)</h2>
-        <p>為確保格線對齊，列印時請將「邊界」設定為「無」或「自訂(皆為0)」，並將「縮放比例」設為「100%」。</p>
-        <button onclick="window.print()">列印 A4</button>
-        <button onclick="window.close()" style="background-color: #6c757d; margin-left: 10px;">關閉視窗</button>
+        <strong>標籤列印作業 (5x7 規格)</strong><br>
+        列印設定建議：邊界設定為「無」，縮放比例設定為「100%」。<br><br>
+        <button onclick="window.print()">開始列印</button>
+        <button class="secondary" onclick="window.close()">關閉視窗</button>
     </div>
 
     <?php

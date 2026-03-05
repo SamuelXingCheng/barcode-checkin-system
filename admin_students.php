@@ -1,7 +1,6 @@
 <?php
 session_start();
 
-// 權限驗證
 if (!isset($_SESSION['admin_id'])) {
     header("Location: login.php");
     exit;
@@ -19,7 +18,6 @@ $classes = [];
 $students = [];
 
 try {
-    // 1. 取得當前運行中的期別
     $stmt = $pdo->query("SELECT id, term_name FROM terms WHERE is_active = 1 LIMIT 1");
     $active_term = $stmt->fetch();
     
@@ -27,31 +25,48 @@ try {
         $term_id = $active_term['id'];
         $active_term_name = $active_term['term_name'];
 
-        // 2. 處理表單送出 (新增、修改或刪除學生)
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
-            // 判斷是否為「刪除」操作
-            if (isset($_POST['action']) && $_POST['action'] === 'delete') {
+            // 處理批次移除 (軟刪除，保留主檔)
+            if (isset($_POST['action']) && $_POST['action'] === 'batch_delete') {
+                $delete_ids = $_POST['delete_ids'] ?? [];
+                if (!empty($delete_ids) && is_array($delete_ids)) {
+                    $pdo->beginTransaction();
+                    try {
+                        $placeholders = implode(',', array_fill(0, count($delete_ids), '?'));
+                        $pdo->prepare("DELETE FROM barcode_checkin_log WHERE student_id IN ($placeholders)")->execute($delete_ids);
+                        $pdo->prepare("DELETE FROM student_term_class WHERE student_id IN ($placeholders)")->execute($delete_ids);
+                        
+                        $pdo->commit();
+                        $message = "成功移除 " . count($delete_ids) . " 筆學生資料與出勤紀錄。";
+                        $message_type = "success";
+                    } catch (Exception $e) {
+                        $pdo->rollBack();
+                        $message = "批次移除失敗：" . $e->getMessage();
+                        $message_type = "danger";
+                    }
+                }
+            }
+            // 處理單筆移除 (軟刪除，保留主檔)
+            elseif (isset($_POST['action']) && $_POST['action'] === 'delete') {
                 $delete_id = intval($_POST['delete_student_id']);
                 if ($delete_id > 0) {
                     $pdo->beginTransaction();
                     try {
-                        // 依序刪除：打卡紀錄 -> 分班紀錄 -> 學生主檔，以符合關聯限制
                         $pdo->prepare("DELETE FROM barcode_checkin_log WHERE student_id = ?")->execute([$delete_id]);
                         $pdo->prepare("DELETE FROM student_term_class WHERE student_id = ?")->execute([$delete_id]);
-                        $pdo->prepare("DELETE FROM students WHERE id = ?")->execute([$delete_id]);
                         
                         $pdo->commit();
-                        $message = "該學生資料及其出勤紀錄已永久刪除。";
+                        $message = "該學生資料已成功移除。";
                         $message_type = "success";
                     } catch (Exception $e) {
                         $pdo->rollBack();
-                        $message = "刪除失敗：" . $e->getMessage();
+                        $message = "移除失敗：" . $e->getMessage();
                         $message_type = "danger";
                     }
                 }
             } 
-            // 否則為「新增/修改」操作
+            // 處理新增或修改
             else {
                 $student_no = trim($_POST['student_no'] ?? '');
                 $name = trim($_POST['name'] ?? '');
@@ -64,58 +79,72 @@ try {
                 }
 
                 if (!empty($name) && $class_id > 0) {
-                    $pdo->beginTransaction();
-                    try {
-                        $student_id = 0;
-
-                        if (!empty($student_no)) {
-                            // 編輯既有學生
-                            $stmtCheck = $pdo->prepare("SELECT id FROM students WHERE student_no = :student_no LIMIT 1");
-                            $stmtCheck->execute([':student_no' => $student_no]);
-                            $existing_student = $stmtCheck->fetch();
-
-                            if ($existing_student) {
-                                $student_id = $existing_student['id'];
-                                $stmtUpdate = $pdo->prepare("UPDATE students SET name = :name, meetinghall = :meetinghall, district = :district WHERE id = :id");
-                                $stmtUpdate->execute([':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district, ':id' => $student_id]);
-                            }
-                        } else {
-                            // 新增學生 (自動產生學號)
-                            $stmtMax = $pdo->query("SELECT MAX(CAST(SUBSTRING(student_no, 2) AS UNSIGNED)) FROM students");
-                            $max_num = $stmtMax->fetchColumn();
-                            
-                            $next_num = $max_num ? ($max_num + 1) : 1001;
-                            $new_student_no = 'S' . $next_num;
-
-                            $stmtInsert = $pdo->prepare("INSERT INTO students (student_no, name, meetinghall, district) VALUES (:student_no, :name, :meetinghall, :district)");
-                            $stmtInsert->execute([':student_no' => $new_student_no, ':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district]);
-                            $student_id = $pdo->lastInsertId();
-                        }
-
-                        if ($student_id === 0) {
-                            throw new Exception("學生主檔處理失敗。");
-                        }
-
-                        // 處理分班表
-                        $stmtCheckClass = $pdo->prepare("SELECT id FROM student_term_class WHERE student_id = :student_id AND term_id = :term_id LIMIT 1");
-                        $stmtCheckClass->execute([':student_id' => $student_id, ':term_id' => $term_id]);
-                        
-                        if ($stmtCheckClass->fetch()) {
-                            $stmtUpdateClass = $pdo->prepare("UPDATE student_term_class SET class_id = :class_id WHERE student_id = :student_id AND term_id = :term_id");
-                            $stmtUpdateClass->execute([':class_id' => $class_id, ':student_id' => $student_id, ':term_id' => $term_id]);
-                        } else {
-                            $stmtInsertClass = $pdo->prepare("INSERT INTO student_term_class (student_id, term_id, class_id) VALUES (:student_id, :term_id, :class_id)");
-                            $stmtInsertClass->execute([':student_id' => $student_id, ':term_id' => $term_id, ':class_id' => $class_id]);
-                        }
-
-                        $pdo->commit();
-                        $message = "學生資料儲存成功。";
-                        $message_type = "success";
-
-                    } catch (Exception $e) {
-                        $pdo->rollBack();
-                        $message = "資料儲存失敗：" . $e->getMessage();
+                    
+                    // 👉 全局防呆攔截：檢查系統中是否已有同名且「非本次編輯學號」的紀錄
+                    $stmtCheckName = $pdo->prepare("SELECT student_no FROM students WHERE name = :name AND student_no != :current_no LIMIT 1");
+                    $stmtCheckName->execute([':name' => $name, ':current_no' => $student_no]);
+                    $dup_student = $stmtCheckName->fetch();
+                    
+                    if ($dup_student) {
+                        // 發現撞名，設定錯誤訊息並阻擋下方寫入
+                        $message = "【重複建立阻擋】系統中已有姓名為「{$name}」的紀錄（舊學號：{$dup_student['student_no']}）。<br>．若為同一人，請在上方學號欄位手動輸入 {$dup_student['student_no']} 以沿用身分。<br>．若為同名之新生，請於姓名後加上辨識碼（例如：{$name}B）再次儲存。";
                         $message_type = "danger";
+                    }
+
+                    // 只有在「沒有撞名」的情況下，才允許執行資料庫操作
+                    if (empty($message)) {
+                        $pdo->beginTransaction();
+                        try {
+                            $student_id = 0;
+
+                            if (!empty($student_no)) {
+                                // 更新舊資料或喚醒復學
+                                $stmtCheck = $pdo->prepare("SELECT id FROM students WHERE student_no = :student_no LIMIT 1");
+                                $stmtCheck->execute([':student_no' => $student_no]);
+                                $existing_student = $stmtCheck->fetch();
+
+                                if ($existing_student) {
+                                    $student_id = $existing_student['id'];
+                                    $stmtUpdate = $pdo->prepare("UPDATE students SET name = :name, meetinghall = :meetinghall, district = :district WHERE id = :id");
+                                    $stmtUpdate->execute([':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district, ':id' => $student_id]);
+                                } else {
+                                    throw new Exception("查無此學號，無法更新或喚醒資料。");
+                                }
+                            } else {
+                                // 全新配發學號
+                                $stmtMax = $pdo->query("SELECT MAX(CAST(SUBSTRING(student_no, 2) AS UNSIGNED)) FROM students");
+                                $max_num = $stmtMax->fetchColumn();
+                                $next_num = $max_num ? ($max_num + 1) : 1001;
+                                $new_student_no = 'S' . $next_num;
+
+                                $stmtInsert = $pdo->prepare("INSERT INTO students (student_no, name, meetinghall, district) VALUES (:student_no, :name, :meetinghall, :district)");
+                                $stmtInsert->execute([':student_no' => $new_student_no, ':name' => $name, ':meetinghall' => $meetinghall, ':district' => $district]);
+                                $student_id = $pdo->lastInsertId();
+                            }
+
+                            if ($student_id === 0) throw new Exception("學生主檔處理失敗。");
+
+                            // 處理分班
+                            $stmtCheckClass = $pdo->prepare("SELECT id FROM student_term_class WHERE student_id = :student_id AND term_id = :term_id LIMIT 1");
+                            $stmtCheckClass->execute([':student_id' => $student_id, ':term_id' => $term_id]);
+                            
+                            if ($stmtCheckClass->fetch()) {
+                                $stmtUpdateClass = $pdo->prepare("UPDATE student_term_class SET class_id = :class_id WHERE student_id = :student_id AND term_id = :term_id");
+                                $stmtUpdateClass->execute([':class_id' => $class_id, ':student_id' => $student_id, ':term_id' => $term_id]);
+                            } else {
+                                $stmtInsertClass = $pdo->prepare("INSERT INTO student_term_class (student_id, term_id, class_id) VALUES (:student_id, :term_id, :class_id)");
+                                $stmtInsertClass->execute([':student_id' => $student_id, ':term_id' => $term_id, ':class_id' => $class_id]);
+                            }
+
+                            $pdo->commit();
+                            $message = "資料儲存成功。";
+                            $message_type = "success";
+
+                        } catch (Exception $e) {
+                            $pdo->rollBack();
+                            $message = "資料儲存失敗：" . $e->getMessage();
+                            $message_type = "danger";
+                        }
                     }
                 } else {
                     $message = "姓名與班級為必填欄位。";
@@ -124,11 +153,9 @@ try {
             }
         }
 
-        // 3. 取得下拉選單所需的班級列表
         $stmtClasses = $pdo->query("SELECT id, class_name FROM classes ORDER BY id ASC");
         $classes = $stmtClasses->fetchAll();
 
-        // 4. 取得學生名單
         $sqlStudents = "
             SELECT 
                 s.id as student_id, s.student_no, s.name, s.meetinghall, s.district, 
@@ -140,7 +167,6 @@ try {
         ";
         $paramsStudents = [':term_id' => $term_id];
 
-        // 👉 若為班級管理員，強制加入 WHERE 條件只看自己班
         if (!$is_super) {
             $sqlStudents .= " AND stc.class_id = :admin_class_id";
             $paramsStudents[':admin_class_id'] = $admin_class_id;
@@ -152,7 +178,7 @@ try {
         $stmtStudents->execute($paramsStudents);
         $students = $stmtStudents->fetchAll();
     } else {
-        $message = "系統尚未設定或啟用任何期別，無法管理名單。";
+        $message = "系統尚未設定或啟用任何期別。";
         $message_type = "danger";
     }
 } catch (PDOException $e) {
@@ -164,15 +190,16 @@ try {
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>學生名單管理 | 系統後台</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f4f6f9; font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: #f4f6f9; font-family: "Segoe UI", sans-serif; }
         .sidebar { min-height: 100vh; background-color: #343a40; color: white; padding-top: 20px; }
         .sidebar a { color: #adb5bd; text-decoration: none; display: block; padding: 10px 20px; margin-bottom: 5px; border-radius: 4px; }
         .sidebar a:hover, .sidebar a.active { background-color: #495057; color: white; }
         .content-area { padding: 30px; }
+        .table-responsive { max-height: 65vh; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 4px; }
+        thead th { position: sticky; top: 0; z-index: 1; background-color: #212529; color: white; }
     </style>
 </head>
 <body>
@@ -180,16 +207,15 @@ try {
 <div class="container-fluid p-0">
     <div class="row g-0">
         <div class="col-md-2 sidebar px-3">
-            <h5 class="px-2 mb-4">報到系統後台</h5>
+            <h5 class="px-2 mb-4 text-light">系統後台管理</h5>
             <a href="admin.php">出席數據總覽</a>
             <a href="admin_students.php" class="active">學生名單管理</a>
-            <a href="#">報表匯出 (建置中)</a>
             <?php if ($is_super): ?>
                 <a href="admin_import.php">批次匯入名單</a>
-                <a href="#">期別與班級設定 (建置中)</a>
             <?php endif; ?>
+            <a href="admin_print_qrcode.php<?php echo $is_super ? '' : '?class_id=' . $admin_class_id; ?>" target="_blank">列印全班標籤</a>
             <hr class="text-secondary">
-            <a href="checkin.php" class="text-info">返回報到櫃台</a>
+            <a href="checkin.php" class="text-info">返回報到系統</a>
             <a href="logout.php" class="text-danger">登出系統</a>
         </div>
 
@@ -198,9 +224,15 @@ try {
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <h2 class="mb-0">學生名單與分班管理</h2>
                 <div>
-                    <span class="badge bg-secondary fs-6 me-2">當前期別：<?php echo htmlspecialchars($active_term_name); ?></span>
-                    <button type="button" class="btn btn-primary" onclick="openStudentModal()">+ 新增/編輯學生</button>
-                    <button type="button" class="btn btn-outline-dark me-2" onclick="printFilteredQRCodes()">列印 QR Code 貼紙</button>
+                    <span class="badge bg-secondary fs-6 me-3">當前期別：<?php echo htmlspecialchars($active_term_name); ?></span>
+                    
+                    <div class="btn-group me-2" role="group">
+                        <button type="button" class="btn btn-outline-success" onclick="batchPrint()">列印勾選名單</button>
+                        <button type="button" class="btn btn-outline-danger" onclick="batchDelete()">移除勾選名單</button>
+                    </div>
+
+                    <button type="button" class="btn btn-outline-dark me-2" onclick="printFilteredQRCodes()">列印全部或篩選結果</button>
+                    <button type="button" class="btn btn-primary" onclick="openStudentModal()">新增學生資料</button>
                 </div>
             </div>
 
@@ -228,7 +260,7 @@ try {
 
             <?php if ($message): ?>
                 <div class="alert alert-<?php echo $message_type; ?> alert-dismissible fade show" role="alert">
-                    <?php echo htmlspecialchars($message); ?>
+                    <?php echo $message; // 輸出 HTML 以呈現分行排版 ?>
                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
             <?php endif; ?>
@@ -237,8 +269,11 @@ try {
                 <div class="card-body p-0">
                     <div class="table-responsive">
                         <table class="table table-striped table-hover mb-0 align-middle">
-                            <thead class="table-dark">
+                            <thead>
                                 <tr>
+                                    <th style="width: 50px;" class="text-center">
+                                        <input class="form-check-input" type="checkbox" id="selectAll">
+                                    </th>
                                     <th>班級</th>
                                     <th>條碼 / 學號</th>
                                     <th>姓名</th>
@@ -251,7 +286,10 @@ try {
                                 <?php if (count($students) > 0): ?>
                                     <?php foreach ($students as $student): ?>
                                         <tr>
-                                            <td><span class="badge bg-info text-dark"><?php echo htmlspecialchars($student['class_name']); ?></span></td>
+                                            <td class="text-center">
+                                                <input class="form-check-input student-checkbox" type="checkbox" value="<?php echo $student['student_id']; ?>" data-no="<?php echo htmlspecialchars($student['student_no']); ?>">
+                                            </td>
+                                            <td><span class="badge bg-secondary"><?php echo htmlspecialchars($student['class_name']); ?></span></td>
                                             <td class="font-monospace fw-bold"><?php echo htmlspecialchars($student['student_no']); ?></td>
                                             <td><?php echo htmlspecialchars($student['name']); ?></td>
                                             <td><?php echo htmlspecialchars($student['meetinghall']); ?></td>
@@ -261,17 +299,17 @@ try {
                                                     onclick="editStudent('<?php echo $student['student_no']; ?>', '<?php echo $student['name']; ?>', '<?php echo $student['meetinghall']; ?>', '<?php echo $student['district']; ?>', '<?php echo $student['class_id']; ?>')">
                                                     編輯
                                                 </button>
-                                                <form method="POST" action="admin_students.php" style="display:inline;" onsubmit="return confirm('警告：確定要永久刪除【<?php echo htmlspecialchars($student['name']); ?>】嗎？\n這將會一併刪除該學生的所有出勤紀錄且無法復原！');">
+                                                <form method="POST" action="admin_students.php" style="display:inline;" onsubmit="return confirm('確認移除此學生資料？');">
                                                     <input type="hidden" name="action" value="delete">
                                                     <input type="hidden" name="delete_student_id" value="<?php echo $student['student_id']; ?>">
-                                                    <button type="submit" class="btn btn-sm btn-outline-danger">刪除</button>
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger">移除</button>
                                                 </form>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
                                 <?php else: ?>
                                     <tr>
-                                        <td colspan="6" class="text-center py-4 text-muted">本期別目前尚無學生資料</td>
+                                        <td colspan="7" class="text-center py-4 text-muted">目前尚無學生資料</td>
                                     </tr>
                                 <?php endif; ?>
                             </tbody>
@@ -283,22 +321,22 @@ try {
     </div>
 </div>
 
-<div class="modal fade" id="studentModal" tabindex="-1" aria-labelledby="studentModalLabel" aria-hidden="true">
+<div class="modal fade" id="studentModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
       <form method="POST" action="admin_students.php">
-          <div class="modal-header bg-primary text-white">
-            <h5 class="modal-title" id="studentModalLabel">學生資料維護</h5>
+          <div class="modal-header bg-dark text-white">
+            <h5 class="modal-title">學生資料維護</h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
             <div class="mb-3">
-                <label class="form-label text-muted">條碼編號 / 學號</label>
-                <input type="text" class="form-control font-monospace" name="student_no" id="modal_student_no" readonly placeholder="系統將於儲存時自動配發">
-                <div class="form-text">新增學生時請留空，系統將自動產生連續學號（如 S1003）。</div>
+                <label class="form-label text-muted">學號</label>
+                <input type="text" class="form-control font-monospace" name="student_no" id="modal_student_no" placeholder="系統將於儲存時自動配發">
+                <div class="form-text">新增資料時請留空；若為舊生復學，請手動輸入舊學號以利系統連結。</div>
             </div>
             <div class="mb-3">
-                <label class="form-label text-muted">學生姓名 (必填)</label>
+                <label class="form-label text-muted">姓名 (必填)</label>
                 <input type="text" class="form-control" name="name" id="modal_name" required>
             </div>
             <div class="row">
@@ -312,7 +350,7 @@ try {
                 </div>
             </div>
             <div class="mb-3">
-                <label class="form-label text-muted">分配班級 (本期別)</label>
+                <label class="form-label text-muted">分配班級</label>
                 <?php if ($is_super): ?>
                     <select class="form-select" name="class_id" id="modal_class_id" required>
                         <option value="">請選擇班級...</option>
@@ -339,10 +377,9 @@ try {
 <script>
     const studentModal = new bootstrap.Modal(document.getElementById('studentModal'));
 
-    // 開啟新增模式
     function openStudentModal() {
         document.getElementById('modal_student_no').value = '';
-        document.getElementById('modal_student_no').readOnly = false; // 允許輸入
+        document.getElementById('modal_student_no').readOnly = false; 
         document.getElementById('modal_name').value = '';
         document.getElementById('modal_meetinghall').value = '';
         document.getElementById('modal_district').value = '';
@@ -350,44 +387,90 @@ try {
         studentModal.show();
     }
 
-    // 開啟編輯模式並帶入既有資料
     function editStudent(student_no, name, meetinghall, district, class_id) {
         document.getElementById('modal_student_no').value = student_no;
-        document.getElementById('modal_student_no').readOnly = true; // 編輯時鎖定學號，防止改錯
+        document.getElementById('modal_student_no').readOnly = true; 
         document.getElementById('modal_name').value = name;
         document.getElementById('modal_meetinghall').value = meetinghall;
         document.getElementById('modal_district').value = district;
         document.getElementById('modal_class_id').value = class_id;
         studentModal.show();
     }
-    // 【新增】列印按鈕：點擊當下動態抓取搜尋條件，開啟新分頁
+
+    const selectAllCb = document.getElementById('selectAll');
+    if (selectAllCb) {
+        selectAllCb.addEventListener('change', function(e) {
+            const checkboxes = document.querySelectorAll('.student-checkbox');
+            checkboxes.forEach(cb => {
+                if (cb.closest('tr').style.display !== 'none') {
+                    cb.checked = e.target.checked;
+                }
+            });
+        });
+    }
+
+    function batchPrint() {
+        const checked = document.querySelectorAll('.student-checkbox:checked');
+        if (checked.length === 0) {
+            alert('請先於列表中勾選需要列印的資料。');
+            return;
+        }
+        let nos = [];
+        checked.forEach(cb => nos.push(cb.getAttribute('data-no')));
+        window.open('admin_print_qrcode.php?selected=' + encodeURIComponent(nos.join(',')), '_blank');
+    }
+
+    function batchDelete() {
+        const checked = document.querySelectorAll('.student-checkbox:checked');
+        if (checked.length === 0) {
+            alert('請先於列表中勾選需要移除的資料。');
+            return;
+        }
+        if (!confirm('確認移除選定的 ' + checked.length + ' 筆資料？')) {
+            return;
+        }
+
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = 'admin_students.php';
+
+        const actionInput = document.createElement('input');
+        actionInput.type = 'hidden';
+        actionInput.name = 'action';
+        actionInput.value = 'batch_delete';
+        form.appendChild(actionInput);
+
+        checked.forEach(cb => {
+            const idInput = document.createElement('input');
+            idInput.type = 'hidden';
+            idInput.name = 'delete_ids[]';
+            idInput.value = cb.value; 
+            form.appendChild(idInput);
+        });
+
+        document.body.appendChild(form);
+        form.submit();
+    }
+
     function printFilteredQRCodes() {
         const classFilterElem = document.getElementById('classFilter');
         const classVal = classFilterElem ? classFilterElem.value : '';
         const searchVal = document.getElementById('studentSearch').value;
         
-        // 從 PHP 讀取目前登入者的身分與班級 ID
         const isSuper = <?php echo $is_super ? 'true' : 'false'; ?>;
         const adminClassId = '<?php echo $admin_class_id; ?>';
-
-        // 動態組合 URL 參數
         const params = new URLSearchParams();
         
         if (isSuper) {
-            // 總管理員：依據下拉選單的值傳遞班級名稱
             if (classVal) params.append('class_name', classVal);
         } else {
-            // 班級管理員：強制傳遞自己的班級 ID
             params.append('class_id', adminClassId);
         }
-        
         if (searchVal) params.append('search', searchVal);
 
-        // 開啟列印頁面
         window.open('admin_print_qrcode.php?' + params.toString(), '_blank');
     }
 
-    // 名單即時篩選邏輯 (純粹控制畫面表格的顯示隱藏)
     function filterTable() {
         const classFilterElem = document.getElementById('classFilter');
         const classVal = classFilterElem ? classFilterElem.value : '';
@@ -396,25 +479,25 @@ try {
 
         rows.forEach(row => {
             if (row.cells.length < 5) return; 
-
-            const className = row.cells[0].textContent || row.cells[0].innerText;
-            const studentNo = row.cells[1].textContent || row.cells[1].innerText;
-            const studentName = row.cells[2].textContent || row.cells[2].innerText;
+            const className = row.cells[1].textContent || row.cells[1].innerText;
+            const studentNo = row.cells[2].textContent || row.cells[2].innerText;
+            const studentName = row.cells[3].textContent || row.cells[3].innerText;
 
             const isClassMatch = classVal === "" || className.includes(classVal);
             const isSearchMatch = searchVal === "" || studentNo.includes(searchVal) || studentName.toUpperCase().includes(searchVal);
 
             row.style.display = (isClassMatch && isSearchMatch) ? "" : "none";
+            
+            if (row.style.display === "none") {
+                const cb = row.querySelector('.student-checkbox');
+                if (cb) cb.checked = false;
+            }
         });
     }
 
-    // 綁定監聽器
     const classFilterNode = document.getElementById('classFilter');
-    if (classFilterNode) {
-        classFilterNode.addEventListener('change', filterTable);
-    }
+    if (classFilterNode) classFilterNode.addEventListener('change', filterTable);
     document.getElementById('studentSearch').addEventListener('input', filterTable);
 </script>
-
 </body>
 </html>
