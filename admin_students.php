@@ -2,10 +2,12 @@
 session_start();
 
 // 權限驗證
-if (!isset($_SESSION['admin_id']) || $_SESSION['role'] !== 'super') {
+if (!isset($_SESSION['admin_id'])) {
     header("Location: login.php");
     exit;
 }
+$is_super = ($_SESSION['role'] === 'super');
+$admin_class_id = $_SESSION['class_id'] ?? 0;
 
 require_once 'config.php';
 
@@ -55,7 +57,11 @@ try {
                 $name = trim($_POST['name'] ?? '');
                 $meetinghall = trim($_POST['meetinghall'] ?? '');
                 $district = trim($_POST['district'] ?? '');
-                $class_id = intval($_POST['class_id'] ?? 0);
+                if (!$is_super) {
+                    $class_id = $admin_class_id;
+                } else {
+                    $class_id = intval($_POST['class_id'] ?? 0);
+                }
 
                 if (!empty($name) && $class_id > 0) {
                     $pdo->beginTransaction();
@@ -122,7 +128,7 @@ try {
         $stmtClasses = $pdo->query("SELECT id, class_name FROM classes ORDER BY id ASC");
         $classes = $stmtClasses->fetchAll();
 
-        // 4. 取得當前期別的所有學生名單
+        // 4. 取得學生名單
         $sqlStudents = "
             SELECT 
                 s.id as student_id, s.student_no, s.name, s.meetinghall, s.district, 
@@ -131,10 +137,19 @@ try {
             INNER JOIN student_term_class stc ON s.id = stc.student_id
             INNER JOIN classes c ON stc.class_id = c.id
             WHERE stc.term_id = :term_id
-            ORDER BY c.id ASC, s.student_no ASC
         ";
+        $paramsStudents = [':term_id' => $term_id];
+
+        // 👉 若為班級管理員，強制加入 WHERE 條件只看自己班
+        if (!$is_super) {
+            $sqlStudents .= " AND stc.class_id = :admin_class_id";
+            $paramsStudents[':admin_class_id'] = $admin_class_id;
+        }
+
+        $sqlStudents .= " ORDER BY c.id ASC, s.student_no ASC";
+        
         $stmtStudents = $pdo->prepare($sqlStudents);
-        $stmtStudents->execute([':term_id' => $term_id]);
+        $stmtStudents->execute($paramsStudents);
         $students = $stmtStudents->fetchAll();
     } else {
         $message = "系統尚未設定或啟用任何期別，無法管理名單。";
@@ -166,12 +181,14 @@ try {
     <div class="row g-0">
         <div class="col-md-2 sidebar px-3">
             <h5 class="px-2 mb-4">報到系統後台</h5>
-            <a href="admin.php">今日出勤總覽</a>
+            <a href="admin.php">出席數據總覽</a>
             <a href="admin_students.php" class="active">學生名單管理</a>
-            <a href="#">期別與班級設定 (建置中)</a>
             <a href="#">報表匯出 (建置中)</a>
-            <a href="admin_import.php">批次匯入名單</a>
-            <a href="admin_print_qrcode.php" target="_blank" class="btn btn-outline-dark me-2" id="printBtn">列印 QR Code 貼紙</a>
+            <?php if ($is_super): ?>
+                <a href="admin_import.php">批次匯入名單</a>
+                <a href="#">期別與班級設定 (建置中)</a>
+            <?php endif; ?>
+            <a href="admin_print_qrcode.php<?php echo $is_super ? '' : '?class_id=' . $admin_class_id; ?>" target="_blank" id="sidebarPrintBtn">列印 QR Code 貼紙</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>
@@ -288,12 +305,17 @@ try {
             </div>
             <div class="mb-3">
                 <label class="form-label text-muted">分配班級 (本期別)</label>
-                <select class="form-select" name="class_id" id="modal_class_id" required>
-                    <option value="">請選擇班級...</option>
-                    <?php foreach ($classes as $class): ?>
-                        <option value="<?php echo $class['id']; ?>"><?php echo htmlspecialchars($class['class_name']); ?></option>
-                    <?php endforeach; ?>
-                </select>
+                <?php if ($is_super): ?>
+                    <select class="form-select" name="class_id" id="modal_class_id" required>
+                        <option value="">請選擇班級...</option>
+                        <?php foreach ($classes as $class): ?>
+                            <option value="<?php echo $class['id']; ?>"><?php echo htmlspecialchars($class['class_name']); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                <?php else: ?>
+                    <input type="hidden" name="class_id" id="modal_class_id" value="<?php echo $admin_class_id; ?>">
+                    <input type="text" class="form-control" value="您的專屬班級" disabled>
+                <?php endif; ?>
             </div>
           </div>
           <div class="modal-footer">

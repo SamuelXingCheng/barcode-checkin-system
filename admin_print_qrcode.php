@@ -1,6 +1,6 @@
 <?php
 session_start();
-if (!isset($_SESSION['admin_id']) || $_SESSION['role'] !== 'super') {
+if (!isset($_SESSION['admin_id'])) {
     die("拒絕存取：權限不足。");
 }
 require_once 'config.php';

@@ -58,9 +58,7 @@ try {
             <div>
                 <span class="text-light me-3" id="systemTime"></span>
                 <span class="text-secondary me-3">|</span>
-                <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'super'): ?>
-                    <a href="admin.php" class="btn btn-outline-info btn-sm me-2">後台管理</a>
-                <?php endif; ?>
+                <a href="admin.php" class="btn btn-outline-info btn-sm me-2">後台管理</a>
                 <a href="logout.php" class="btn btn-outline-danger btn-sm">登出</a>
             </div>
         </div>
@@ -163,6 +161,11 @@ try {
                     result.data.forEach(cls => {
                         selector.appendChild(new Option(cls.class_name, cls.id));
                     });
+                    if (result.data.length === 1) {
+                        selector.value = result.data[0].id;
+                        selector.disabled = true; 
+                        localStorage.setItem('checkin_class', result.data[0].id);
+                    }
                 }
 
                 // 讀取 localStorage 中的記憶設定

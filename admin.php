@@ -1,12 +1,16 @@
 <?php
 session_start();
 
-if (!isset($_SESSION['admin_id']) || $_SESSION['role'] !== 'super') {
-    header("Location: checkin.php");
+// 權限驗證：只要有登入即可進入 (區分 super 與 class)
+if (!isset($_SESSION['admin_id'])) {
+    header("Location: login.php");
     exit;
 }
 
 require_once 'config.php';
+
+$is_super = ($_SESSION['role'] === 'super');
+$admin_class_id = $_SESSION['class_id'] ?? 0;
 
 $active_term_name = '無啟用期別';
 $term_id = 0;
@@ -16,7 +20,6 @@ $attended_count = 0;
 $expected_attendances = 0;
 $attendance_rate = 0;
 
-// 自動計算當前週次 (與報到櫃台邏輯一致)
 $current_week = 1;
 $total_weeks = 1;
 $start_timestamp = 0;
@@ -41,15 +44,14 @@ try {
         if ($current_week > $total_weeks) $current_week = $total_weeks;
         if ($current_week < 1) $current_week = 1;
 
-        // 取得過濾條件 (預設顯示：所有班級、當前週次)
-        $filter_class_id = isset($_GET['class_id']) ? intval($_GET['class_id']) : 0;
+        // 👉 權限判斷：若為總管理員，接收網頁傳來的班級；若為班級管理員，強制鎖定為自己的班級
+        $filter_class_id = $is_super ? (isset($_GET['class_id']) ? intval($_GET['class_id']) : 0) : $admin_class_id;
         $filter_week_no = isset($_GET['week_no']) ? intval($_GET['week_no']) : $current_week;
 
-        // 1. 取得班級清單 (供下拉選單使用)
         $stmtClasses = $pdo->query("SELECT id, class_name FROM classes ORDER BY id ASC");
         $classes = $stmtClasses->fetchAll();
 
-        // 2. 計算母體總人數 (根據是否選擇班級)
+        // 計算母體總人數
         $sqlTotal = "SELECT COUNT(*) FROM student_term_class WHERE term_id = :term_id";
         $paramsTotal = [':term_id' => $term_id];
         if ($filter_class_id > 0) {
@@ -60,11 +62,9 @@ try {
         $stmtTotal->execute($paramsTotal);
         $base_students = $stmtTotal->fetchColumn();
 
-        // 3. 計算出席人次與預期人次
+        // 計算出席人次與預期人次
         if ($filter_week_no > 0) {
-            // 單週模式：預期人次 = 總人數，實際出席 = 該週有打卡的「不重複」人數
             $expected_attendances = $base_students;
-            
             $sqlAttended = "
                 SELECT COUNT(DISTINCT log.student_id) 
                 FROM barcode_checkin_log log 
@@ -77,9 +77,7 @@ try {
                 $paramsAttended[':class_id'] = $filter_class_id;
             }
         } else {
-            // 全學期模式 (week_no = 0)：預期人次 = 總人數 x 目前已進行的週次
             $expected_attendances = $base_students * $current_week;
-            
             $sqlAttended = "
                 SELECT COUNT(log.id) 
                 FROM barcode_checkin_log log 
@@ -97,12 +95,11 @@ try {
         $stmtAttended->execute($paramsAttended);
         $attended_count = $stmtAttended->fetchColumn();
 
-        // 結算出席率
         if ($expected_attendances > 0) {
             $attendance_rate = round(($attended_count / $expected_attendances) * 100, 1);
         }
 
-        // 4. 取得詳細打卡紀錄清單
+        // 取得詳細打卡紀錄清單
         $sqlLogs = "
             SELECT 
                 log.scan_time, log.week_no, c.class_name, s.student_no, s.name, s.meetinghall, log.is_manual
@@ -114,13 +111,13 @@ try {
         ";
         $paramsLogs = [':term_id' => $term_id];
         
-        if ($filter_week_no > 0) {
-            $sqlLogs .= " AND log.week_no = :week_no";
-            $paramsLogs[':week_no'] = $filter_week_no;
-        }
         if ($filter_class_id > 0) {
             $sqlLogs .= " AND stc.class_id = :class_id";
             $paramsLogs[':class_id'] = $filter_class_id;
+        }
+        if ($filter_week_no > 0) {
+            $sqlLogs .= " AND log.week_no = :week_no";
+            $paramsLogs[':week_no'] = $filter_week_no;
         }
         
         $sqlLogs .= " ORDER BY log.scan_time DESC";
@@ -136,7 +133,7 @@ try {
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>出席數據總覽 | 系統後台</title>
+    <title>出勤數據總覽 | 系統後台</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { background-color: #f4f6f9; font-family: "Segoe UI", sans-serif; }
@@ -154,11 +151,13 @@ try {
 <div class="container-fluid p-0">
     <div class="row g-0">
         <div class="col-md-2 sidebar px-3">
-            <h5 class="px-2 mb-4">得勝班報到系統後台</h5>
+            <h5 class="px-2 mb-4">報到系統後台</h5>
             <a href="admin.php" class="active">出勤數據總覽</a>
             <a href="admin_students.php">學生名單管理</a>
-            <a href="admin_import.php">批次匯入名單</a>
-            <a href="admin_print_qrcode.php" target="_blank">列印 QR Code 貼紙</a>
+            <?php if ($is_super): ?>
+                <a href="admin_import.php">批次匯入名單</a>
+            <?php endif; ?>
+            <a href="admin_print_qrcode.php<?php echo $is_super ? '' : '?class_id=' . $admin_class_id; ?>" target="_blank" id="sidebarPrintBtn">列印 QR Code 貼紙</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>
@@ -170,13 +169,11 @@ try {
                 <span class="badge bg-secondary fs-6">當前期別：<?php echo htmlspecialchars($active_term_name); ?></span>
             </div>
 
-            <?php if (isset($error_msg)): ?>
-                <div class="alert alert-danger"><?php echo htmlspecialchars($error_msg); ?></div>
-            <?php endif; ?>
-
             <div class="card shadow-sm border-0 mb-4 bg-light">
                 <div class="card-body">
                     <form method="GET" action="admin.php" id="filterForm" class="row g-3 align-items-end">
+                        
+                        <?php if ($is_super): ?>
                         <div class="col-md-4">
                             <label class="form-label text-muted">檢視班級</label>
                             <select name="class_id" class="form-select" onchange="document.getElementById('filterForm').submit();">
@@ -188,6 +185,8 @@ try {
                                 <?php endforeach; ?>
                             </select>
                         </div>
+                        <?php endif; ?>
+
                         <div class="col-md-4">
                             <label class="form-label text-muted">檢視期間</label>
                             <select name="week_no" class="form-select" onchange="document.getElementById('filterForm').submit();">
@@ -213,11 +212,8 @@ try {
             <div class="row mb-4">
                 <div class="col-md-4">
                     <div class="stat-card">
-                        <h6 class="text-muted mb-2">應到總人數 (選定範圍)</h6>
+                        <h6 class="text-muted mb-2">應到總人數</h6>
                         <h3><?php echo $base_students; ?> 人</h3>
-                        <?php if ($filter_week_no == 0): ?>
-                            <small class="text-muted">全學期預期出席累計: <?php echo $expected_attendances; ?> 人次</small>
-                        <?php endif; ?>
                     </div>
                 </div>
                 <div class="col-md-4">
@@ -249,7 +245,6 @@ try {
                                     <th>班級</th>
                                     <th>學號</th>
                                     <th>姓名</th>
-                                    <th>所屬會所</th>
                                     <th>報到方式</th>
                                 </tr>
                             </thead>
@@ -262,7 +257,6 @@ try {
                                             <td><?php echo htmlspecialchars($log['class_name']); ?></td>
                                             <td class="font-monospace"><?php echo htmlspecialchars($log['student_no']); ?></td>
                                             <td><?php echo htmlspecialchars($log['name']); ?></td>
-                                            <td><?php echo htmlspecialchars($log['meetinghall']); ?></td>
                                             <td>
                                                 <?php if ($log['is_manual'] == 1): ?>
                                                     <span class="badge bg-warning text-dark">手動補簽</span>
@@ -274,7 +268,7 @@ try {
                                     <?php endforeach; ?>
                                 <?php else: ?>
                                     <tr>
-                                        <td colspan="7" class="text-center py-4 text-muted">此篩選條件下尚無任何報到紀錄</td>
+                                        <td colspan="6" class="text-center py-4 text-muted">此篩選條件下尚無任何報到紀錄</td>
                                     </tr>
                                 <?php endif; ?>
                             </tbody>
