@@ -171,7 +171,7 @@ try {
             <a href="#">期別與班級設定 (建置中)</a>
             <a href="#">報表匯出 (建置中)</a>
             <a href="admin_import.php">批次匯入名單</a>
-            <a href="admin_print_qrcode.php" target="_blank">列印 QR Code 貼紙</a>
+            <a href="admin_print_qrcode.php" target="_blank" class="btn btn-outline-dark me-2" id="printBtn">列印 QR Code 貼紙</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>
@@ -337,7 +337,6 @@ try {
         const rows = document.querySelectorAll('tbody tr');
 
         rows.forEach(row => {
-            // 確保不是「目前無資料」的提示列
             if (row.cells.length < 5) return; 
 
             const className = row.cells[0].textContent || row.cells[0].innerText;
@@ -349,6 +348,13 @@ try {
 
             row.style.display = (isClassMatch && isSearchMatch) ? "" : "none";
         });
+
+        // 👉 新增：將當前的篩選條件附加到列印按鈕的網址中
+        const printBtn = document.getElementById('printBtn');
+        if (printBtn) {
+            // 將搜尋條件進行 URL 編碼，避免特殊字元造成網址錯誤
+            printBtn.href = `admin_print_qrcode.php?class_name=${encodeURIComponent(classVal)}&search=${encodeURIComponent(searchVal)}`;
+        }
     }
 
     document.getElementById('classFilter').addEventListener('change', filterTable);

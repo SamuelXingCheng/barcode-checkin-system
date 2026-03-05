@@ -12,19 +12,48 @@ $students = [];
 try {
     $stmt = $pdo->query("SELECT id, term_name FROM terms WHERE is_active = 1 LIMIT 1");
     $active_term = $stmt->fetch();
+    
     if ($active_term) {
         $term_id = $active_term['id'];
         $active_term_name = $active_term['term_name'];
+        
+        // 接收前端傳來的篩選條件
+        $filter_class = $_GET['class_name'] ?? '';
+        $filter_search = $_GET['search'] ?? '';
+
+        // 建立基礎 SQL 語法與參數陣列
         $sql = "
             SELECT s.student_no, s.name 
             FROM students s
             INNER JOIN student_term_class stc ON s.id = stc.student_id
+            INNER JOIN classes c ON stc.class_id = c.id
             WHERE stc.term_id = :term_id
-            ORDER BY s.student_no ASC
         ";
+        $params = [':term_id' => $term_id];
+
+        // 條件一：若有選擇班級，加入班級過濾條件
+        if ($filter_class !== '') {
+            $sql .= " AND c.class_name = :class_name";
+            $params[':class_name'] = $filter_class;
+        }
+
+        // 條件二：若有輸入搜尋關鍵字，加入姓名或學號的模糊比對
+        if ($filter_search !== '') {
+            $sql .= " AND (s.name LIKE :search OR s.student_no LIKE :search)";
+            // SQL 中的 LIKE 必須搭配 % 符號來代表模糊搜尋
+            $params[':search'] = '%' . $filter_search . '%';
+        }
+
+        $sql .= " ORDER BY s.student_no ASC";
+
         $stmtStudents = $pdo->prepare($sql);
-        $stmtStudents->execute([':term_id' => $term_id]);
+        $stmtStudents->execute($params);
         $students = $stmtStudents->fetchAll();
+        
+        // 如果篩選後沒有任何名單，中斷程式並提示使用者
+        if (count($students) === 0) {
+            die("<div style='text-align:center; padding:50px; font-family:sans-serif;'><h3>查無符合條件的學生名單，無法列印。</h3><button onclick='window.close()'>關閉視窗</button></div>");
+        }
     }
 } catch (PDOException $e) {
     die("資料庫錯誤：" . $e->getMessage());
