@@ -25,11 +25,14 @@ try {
     }
     $term_id = $term['id'];
 
-    // 撈取學生名單時，同時附上 is_attended (是否有報到) 與 is_late (是否為"已到")
+    // 撈取名單時，同時附上 is_leave, hw_practice, hw_prophesy
     $sql = "
         SELECT s.id as student_id, s.student_no, s.name,
                IF(log.id IS NOT NULL, 1, 0) as is_attended,
-               COALESCE(log.is_late, 0) as is_late
+               COALESCE(log.is_late, 0) as is_late,
+               COALESCE(log.is_leave, 0) as is_leave,
+               COALESCE(log.hw_practice, 0) as hw_practice,
+               COALESCE(log.hw_prophesy, 0) as hw_prophesy
         FROM students s
         INNER JOIN student_term_class stc ON s.id = stc.student_id
         LEFT JOIN barcode_checkin_log log ON s.id = log.student_id AND log.term_id = :term_id AND log.week_no = :week_no
@@ -41,14 +44,18 @@ try {
     $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $attended = 0;
+    $leaves = 0;
     foreach ($students as $s) {
-        if ($s['is_attended']) $attended++;
+        if ($s['is_attended'] == 1) {
+            if ($s['is_leave'] == 1) $leaves++;
+            else $attended++;
+        }
     }
 
     echo json_encode([
         'status' => 'success',
         'data' => [
-            'summary' => ['total' => count($students), 'attended' => $attended],
+            'summary' => ['total' => count($students), 'attended' => $attended, 'leaves' => $leaves],
             'students' => $students
         ]
     ]);

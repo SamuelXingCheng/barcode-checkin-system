@@ -112,7 +112,9 @@ try {
                     <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
                         <span>目前出勤名單</span>
                         <span class="badge bg-light text-dark fs-6">
-                            已報到: <span id="attendCount">0</span> / 應到: <span id="totalCount">0</span>
+                            實到: <span id="attendCount" class="text-success fw-bold">0</span> / 
+                            請假: <span id="leaveCount" class="text-danger fw-bold">0</span> / 
+                            應到: <span id="totalCount">0</span>
                         </span>
                     </div>
                     <div class="card-body">
@@ -192,48 +194,79 @@ try {
                 const response = await fetch(`api_get_students.php?class_id=${classId}&week_no=${weekNo}`);
                 const result = await response.json();
                 if (result.status === 'success') {
+                    // 更新右上角統計
                     document.getElementById('attendCount').textContent = result.data.summary.attended;
+                    document.getElementById('leaveCount').textContent = result.data.summary.leaves || 0;
                     document.getElementById('totalCount').textContent = result.data.summary.total;
+                    
                     if (result.data.students.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">該班級目前無學生資料</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">該班級目前無學生資料</td></tr>';
                         return;
                     }
+                    
+                    // 重新定義表頭以納入作業區塊
+                    document.querySelector('#studentTable thead tr').innerHTML = `
+                        <th style="width: 12%;">狀態</th>
+                        <th style="width: 15%;">學號</th>
+                        <th style="width: 23%;">姓名</th>
+                        <th style="width: 25%;">作業繳交</th>
+                        <th style="width: 25%; text-align: center;">出勤操作</th>
+                    `;
+
                     let html = '';
                     result.data.students.forEach(student => {
                         const isAttended = parseInt(student.is_attended) === 1;
                         const isLate = parseInt(student.is_late) === 1;
+                        const isLeave = parseInt(student.is_leave) === 1;
                         
                         let statusBadge = '';
                         let actionButtons = '';
 
                         if (!isAttended) {
                             statusBadge = '<span class="badge bg-secondary status-badge">未到</span>';
-                            // 未報到：顯示 準時 / 已到 兩顆按鈕
                             actionButtons = `
-                                <div class="d-flex justify-content-center gap-2">
-                                    <button class="btn btn-sm btn-outline-success" onclick="doManualCheckin(${student.student_id}, 'checkin_ontime')">準時</button>
-                                    <button class="btn btn-sm btn-outline-warning" onclick="doManualCheckin(${student.student_id}, 'checkin_late')">已到</button>
+                                <div class="d-flex justify-content-center gap-1">
+                                    <button class="btn btn-sm btn-outline-success px-2" onclick="doManualCheckin(${student.student_id}, 'checkin_ontime')">準時</button>
+                                    <button class="btn btn-sm btn-outline-warning px-2" onclick="doManualCheckin(${student.student_id}, 'checkin_late')">已到</button>
+                                    <button class="btn btn-sm btn-outline-danger px-2" onclick="doManualCheckin(${student.student_id}, 'set_leave')">請假</button>
                                 </div>
                             `;
                         } else {
-                            if (isLate) {
+                            if (isLeave) {
+                                statusBadge = '<span class="badge bg-danger status-badge">請假</span>';
+                            } else if (isLate) {
                                 statusBadge = '<span class="badge bg-warning text-dark status-badge">已到</span>';
                             } else {
                                 statusBadge = '<span class="badge bg-success status-badge">準時</span>';
                             }
-                            // 已報到：顯示 取消 按鈕
                             actionButtons = `
                                 <div class="d-flex justify-content-center">
-                                    <button class="btn btn-sm btn-outline-danger" onclick="doManualCheckin(${student.student_id}, 'checkout')">取消</button>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="doManualCheckin(${student.student_id}, 'checkout')">清除狀態</button>
                                 </div>
                             `;
                         }
+
+                        // 作業繳交的 Checkbox 區塊
+                        const hwPracticeChecked = (parseInt(student.hw_practice) === 1) ? 'checked' : '';
+                        const hwProphesyChecked = (parseInt(student.hw_prophesy) === 1) ? 'checked' : '';
+                        
+                        const hwCheckboxes = `
+                            <div class="form-check form-check-inline mb-0">
+                                <input class="form-check-input border-primary" type="checkbox" id="prac_${student.student_id}" onchange="toggleHW(${student.student_id}, 'hw_practice', this.checked, this)" ${hwPracticeChecked}>
+                                <label class="form-check-label text-muted" for="prac_${student.student_id}">操練表</label>
+                            </div>
+                            <div class="form-check form-check-inline mb-0">
+                                <input class="form-check-input border-info" type="checkbox" id="proph_${student.student_id}" onchange="toggleHW(${student.student_id}, 'hw_prophesy', this.checked, this)" ${hwProphesyChecked}>
+                                <label class="form-check-label text-muted" for="proph_${student.student_id}">申言稿</label>
+                            </div>
+                        `;
 
                         html += `
                             <tr>
                                 <td>${statusBadge}</td>
                                 <td class="font-monospace">${student.student_no}</td>
-                                <td>${student.name}</td>
+                                <td class="fw-bold">${student.name}</td>
+                                <td>${hwCheckboxes}</td>
                                 <td>${actionButtons}</td>
                             </tr>`;
                     });
@@ -242,11 +275,9 @@ try {
             } catch (error) { console.error(error); }
         }
 
-        // 新增的獨立手動報到函數
         window.doManualCheckin = async function(studentId, action) {
             const weekNo = document.getElementById('weekSelector').value;
             const classId = document.getElementById('classSelector').value;
-            
             try {
                 const response = await fetch('api_manual_checkin.php', {
                     method: 'POST',
@@ -256,14 +287,43 @@ try {
                 const result = await response.json();
                 if (result.status === 'success') {
                     playBeep('success');
-                    loadStudentList(classId); // 成功後刷新表格
+                    loadStudentList(classId); 
                 } else {
+                    playBeep('error'); alert(result.message);
+                }
+            } catch (error) { playBeep('error'); alert('系統連線異常'); }
+        };
+
+        // 修正後的作業更新函數 (包含自動復原機制)
+        window.toggleHW = async function(studentId, hwType, isChecked, checkboxElem) {
+            const weekNo = document.getElementById('weekSelector').value;
+            const classId = document.getElementById('classSelector').value;
+            try {
+                const response = await fetch('api_manual_checkin.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        student_id: studentId, 
+                        action: 'update_hw', 
+                        week_no: weekNo,
+                        hw_type: hwType,
+                        hw_val: isChecked ? 1 : 0
+                    })
+                });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    // 成功時不需重整表格，保留流暢感
+                } else {
+                    // 👉 觸發防呆錯誤時：跳出警告，並把剛才的打勾取消
                     playBeep('error');
                     alert(result.message);
+                    checkboxElem.checked = !isChecked; 
                 }
             } catch (error) { 
                 playBeep('error');
                 alert('系統連線異常'); 
+                checkboxElem.checked = !isChecked; 
             }
         };
 
