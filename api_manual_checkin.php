@@ -1,42 +1,56 @@
 <?php
+session_start();
 header('Content-Type: application/json; charset=utf-8');
+
+if (!isset($_SESSION['admin_id'])) {
+    echo json_encode(['status' => 'error', 'message' => '請先登入']);
+    exit;
+}
+
 require_once 'config.php';
 
 $input = json_decode(file_get_contents('php://input'), true);
-$student_id = isset($input['student_id']) ? intval($input['student_id']) : 0;
-$week_no = isset($input['week_no']) ? intval($input['week_no']) : 1;
-$action = isset($input['action']) ? $input['action'] : ''; 
+$student_id = intval($input['student_id'] ?? 0);
+$action = $input['action'] ?? ''; // 'checkin_ontime', 'checkin_late', 'checkout'
+$week_no = intval($input['week_no'] ?? 0);
 
-if ($student_id <= 0 || !in_array($action, ['checkin', 'checkout'])) {
-    echo json_encode(['status' => 'error', 'message' => '傳遞參數無效']);
+if ($student_id <= 0 || $week_no <= 0 || empty($action)) {
+    echo json_encode(['status' => 'error', 'message' => '參數錯誤']);
     exit;
 }
 
 try {
-    $stmt = $pdo->query("SELECT id FROM terms WHERE is_active = 1 LIMIT 1");
-    $active_term = $stmt->fetch();
-    if (!$active_term) {
-        echo json_encode(['status' => 'error', 'message' => '系統尚未設定開放的期別']);
+    $stmtTerm = $pdo->query("SELECT id FROM terms WHERE is_active = 1 LIMIT 1");
+    $term = $stmtTerm->fetch();
+    if (!$term) {
+        echo json_encode(['status' => 'error', 'message' => '尚未啟用期別']);
         exit;
     }
-    $term_id = $active_term['id'];
+    $term_id = $term['id'];
 
-    if ($action === 'checkin') {
-        $stmt = $pdo->prepare("SELECT id FROM barcode_checkin_log WHERE student_id = :student_id AND term_id = :term_id AND week_no = :week_no");
+    if ($action === 'checkout') {
+        // 取消報到
+        $stmt = $pdo->prepare("DELETE FROM barcode_checkin_log WHERE student_id = :student_id AND term_id = :term_id AND week_no = :week_no");
         $stmt->execute([':student_id' => $student_id, ':term_id' => $term_id, ':week_no' => $week_no]);
+        echo json_encode(['status' => 'success', 'message' => '已取消報到']);
+    } else {
+        // 報到 (防呆：先檢查是否已經簽過了)
+        $stmtCheck = $pdo->prepare("SELECT id FROM barcode_checkin_log WHERE student_id = :student_id AND term_id = :term_id AND week_no = :week_no");
+        $stmtCheck->execute([':student_id' => $student_id, ':term_id' => $term_id, ':week_no' => $week_no]);
         
-        if (!$stmt->fetch()) {
-            $insertStmt = $pdo->prepare("INSERT INTO barcode_checkin_log (student_id, term_id, week_no, scan_time, is_manual) VALUES (:student_id, :term_id, :week_no, NOW(), 1)");
-            $insertStmt->execute([':student_id' => $student_id, ':term_id' => $term_id, ':week_no' => $week_no]);
+        if (!$stmtCheck->fetch()) {
+            $is_late = ($action === 'checkin_late') ? 1 : 0;
+            $stmtInsert = $pdo->prepare("INSERT INTO barcode_checkin_log (student_id, term_id, week_no, scan_time, is_manual, is_late) VALUES (:student_id, :term_id, :week_no, NOW(), 1, :is_late)");
+            $stmtInsert->execute([
+                ':student_id' => $student_id, 
+                ':term_id' => $term_id, 
+                ':week_no' => $week_no, 
+                ':is_late' => $is_late
+            ]);
         }
-    } else if ($action === 'checkout') {
-        $deleteStmt = $pdo->prepare("DELETE FROM barcode_checkin_log WHERE student_id = :student_id AND term_id = :term_id AND week_no = :week_no");
-        $deleteStmt->execute([':student_id' => $student_id, ':term_id' => $term_id, ':week_no' => $week_no]);
+        echo json_encode(['status' => 'success', 'message' => '報到成功']);
     }
-
-    echo json_encode(['status' => 'success', 'message' => '出勤狀態已更新']);
-
 } catch (PDOException $e) {
-    echo json_encode(['status' => 'error', 'message' => '資料庫處理失敗：' . $e->getMessage()]);
+    echo json_encode(['status' => 'error', 'message' => '資料庫錯誤：' . $e->getMessage()]);
 }
 ?>

@@ -201,23 +201,71 @@ try {
                     let html = '';
                     result.data.students.forEach(student => {
                         const isAttended = parseInt(student.is_attended) === 1;
+                        const isLate = parseInt(student.is_late) === 1;
+                        
+                        let statusBadge = '';
+                        let actionButtons = '';
+
+                        if (!isAttended) {
+                            statusBadge = '<span class="badge bg-secondary status-badge">未到</span>';
+                            // 未報到：顯示 準時 / 已到 兩顆按鈕
+                            actionButtons = `
+                                <div class="d-flex justify-content-center gap-2">
+                                    <button class="btn btn-sm btn-outline-success" onclick="doManualCheckin(${student.student_id}, 'checkin_ontime')">準時</button>
+                                    <button class="btn btn-sm btn-outline-warning" onclick="doManualCheckin(${student.student_id}, 'checkin_late')">已到</button>
+                                </div>
+                            `;
+                        } else {
+                            if (isLate) {
+                                statusBadge = '<span class="badge bg-warning text-dark status-badge">已到</span>';
+                            } else {
+                                statusBadge = '<span class="badge bg-success status-badge">準時</span>';
+                            }
+                            // 已報到：顯示 取消 按鈕
+                            actionButtons = `
+                                <div class="d-flex justify-content-center">
+                                    <button class="btn btn-sm btn-outline-danger" onclick="doManualCheckin(${student.student_id}, 'checkout')">取消</button>
+                                </div>
+                            `;
+                        }
+
                         html += `
                             <tr>
-                                <td><span class="badge ${isAttended ? 'bg-success' : 'bg-secondary'} status-badge">${isAttended ? '已到' : '未到'}</span></td>
-                                <td>${student.student_no}</td>
+                                <td>${statusBadge}</td>
+                                <td class="font-monospace">${student.student_no}</td>
                                 <td>${student.name}</td>
-                                <td>
-                                    <div class="form-check form-switch d-flex justify-content-center">
-                                        <input class="form-check-input manual-check-toggle" type="checkbox" role="switch" 
-                                               data-student-id="${student.student_id}" ${isAttended ? 'checked' : ''}>
-                                    </div>
-                                </td>
+                                <td>${actionButtons}</td>
                             </tr>`;
                     });
                     tbody.innerHTML = html;
                 }
             } catch (error) { console.error(error); }
         }
+
+        // 新增的獨立手動報到函數
+        window.doManualCheckin = async function(studentId, action) {
+            const weekNo = document.getElementById('weekSelector').value;
+            const classId = document.getElementById('classSelector').value;
+            
+            try {
+                const response = await fetch('api_manual_checkin.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ student_id: studentId, action: action, week_no: weekNo })
+                });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    playBeep('success');
+                    loadStudentList(classId); // 成功後刷新表格
+                } else {
+                    playBeep('error');
+                    alert(result.message);
+                }
+            } catch (error) { 
+                playBeep('error');
+                alert('系統連線異常'); 
+            }
+        };
 
         // 班級選擇改變時：儲存設定並載入名單
         document.getElementById('classSelector').addEventListener('change', function() {
@@ -248,26 +296,6 @@ try {
             }
         });
 
-        document.getElementById('studentListBody').addEventListener('change', async function(e) {
-            if (e.target && e.target.classList.contains('manual-check-toggle')) {
-                const studentId = e.target.getAttribute('data-student-id');
-                const isChecked = e.target.checked;
-                const weekNo = document.getElementById('weekSelector').value;
-                const classId = document.getElementById('classSelector').value;
-
-                try {
-                    const response = await fetch('api_manual_checkin.php', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ student_id: studentId, action: isChecked ? 'checkin' : 'checkout', week_no: weekNo })
-                    });
-                    const result = await response.json();
-                    if (result.status === 'success') loadStudentList(classId);
-                    else { alert(result.message); e.target.checked = !isChecked; }
-                } catch (error) { alert('系統連線異常'); e.target.checked = !isChecked; }
-            }
-        });
-
         const html5QrcodeScanner = new Html5QrcodeScanner("reader", { 
             fps: 10, 
             qrbox: { width: 250, height: 250 }, // 調整為正方形掃描框，符合 QR Code 比例
@@ -292,15 +320,58 @@ try {
             try {
                 const response = await fetch(`api_checkin.php?student_no=${encodeURIComponent(decodedText)}&week_no=${weekNo}`);
                 const result = await response.json();
+                
+                // 👉 在收到後端回應後，馬上呼叫音效！
+                playBeep(result.status); 
+
                 if (result.status === 'success') {
-                    resultBox.className = "alert alert-success mt-3 text-center"; resultBox.innerText = result.message + ": " + result.name;
+                    resultBox.className = "alert alert-success mt-3 text-center"; 
+                    resultBox.innerText = result.message; // 訊息中已經包含姓名了
                     loadStudentList(classId);
                 } else {
-                    resultBox.className = "alert alert-warning mt-3 text-center"; resultBox.innerText = result.message;
+                    resultBox.className = "alert alert-warning mt-3 text-center"; 
+                    resultBox.innerText = result.message;
                 }
-            } catch (error) { resultBox.className = "alert alert-danger mt-3 text-center"; resultBox.innerText = "系統連線異常"; }
+            } catch (error) { 
+                // 網路斷線等嚴重錯誤，也發出錯誤音效
+                playBeep('error');
+                resultBox.className = "alert alert-danger mt-3 text-center"; 
+                resultBox.innerText = "系統連線異常"; 
+            }
         }
         html5QrcodeScanner.render(onScanSuccess, function() {});
+
+        // --- 音效產生器模組 ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playBeep(type) {
+            // 確保瀏覽器允許播放音效
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            if (type === 'success') {
+                // 成功音效：清脆的高音 (1000Hz, 持續 0.15秒)
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.15);
+            } else {
+                // 錯誤/警告音效：低沉的長音 (300Hz, 持續 0.4秒)
+                oscillator.type = 'square';
+                oscillator.frequency.setValueAtTime(300, audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.4);
+            }
+        }
+        // ----------------------
     </script>
 </body>
 </html>

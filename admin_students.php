@@ -213,7 +213,6 @@ try {
             <?php if ($is_super): ?>
                 <a href="admin_import.php">批次匯入名單</a>
             <?php endif; ?>
-            <a href="admin_print_qrcode.php<?php echo $is_super ? '' : '?class_id=' . $admin_class_id; ?>" target="_blank">列印全班標籤</a>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到系統</a>
             <a href="logout.php" class="text-danger">登出系統</a>
@@ -228,7 +227,7 @@ try {
                     
                     <div class="btn-group me-2" role="group">
                         <button type="button" class="btn btn-outline-success" onclick="batchPrint()">列印勾選名單</button>
-                        <button type="button" class="btn btn-outline-danger" onclick="batchDelete()">移除勾選名單</button>
+                        <button type="button" class="btn btn-outline-danger" onclick="batchDelete()">刪除勾選名單</button>
                     </div>
 
                     <button type="button" class="btn btn-outline-dark me-2" onclick="printFilteredQRCodes()">列印全部或篩選結果</button>
