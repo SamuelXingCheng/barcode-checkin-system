@@ -1,7 +1,6 @@
 <?php
 session_start();
 
-// 權限驗證：只要有登入即可進入 (區分 super 與 class)
 if (!isset($_SESSION['admin_id'])) {
     header("Location: login.php");
     exit;
@@ -16,10 +15,16 @@ $active_term_name = '無啟用期別';
 $term_id = 0;
 $logs = [];
 $base_students = 0;
-$attended_count = 0;
-$late_count = 0; // 👉 新增：初始化遲到人數變數
 $expected_attendances = 0;
 $attendance_rate = 0;
+
+// 新增統計變數
+$attended_count = 0;
+$late_count = 0;
+$ontime_count = 0;
+$leave_count = 0;
+$hw_prac_count = 0;
+$hw_proph_count = 0;
 
 $current_week = 1;
 $total_weeks = 1;
@@ -51,7 +56,7 @@ try {
         $stmtClasses = $pdo->query("SELECT id, class_name FROM classes ORDER BY id ASC");
         $classes = $stmtClasses->fetchAll();
 
-        // 計算母體總人數
+        // 1. 計算母體總人數
         $sqlTotal = "SELECT COUNT(*) FROM student_term_class WHERE term_id = :term_id";
         $paramsTotal = [':term_id' => $term_id];
         if ($filter_class_id > 0) {
@@ -62,65 +67,54 @@ try {
         $stmtTotal->execute($paramsTotal);
         $base_students = $stmtTotal->fetchColumn();
 
-        // 👉 新增：同時計算「總出席人次」與「遲到(已到)人次」
+        // 2. 智慧計算所有統計指標 (過濾請假，並計算作業)
+        $paramsStats = [':term_id' => $term_id];
+        $sqlStats = "
+            SELECT 
+                SUM(CASE WHEN log.is_leave = 0 THEN 1 ELSE 0 END) as attended_count,
+                SUM(CASE WHEN log.is_leave = 0 AND log.is_late = 1 THEN 1 ELSE 0 END) as late_count,
+                SUM(CASE WHEN log.is_leave = 1 THEN 1 ELSE 0 END) as leave_count,
+                SUM(log.hw_practice) as hw_prac_count,
+                SUM(log.hw_prophesy) as hw_proph_count
+            FROM barcode_checkin_log log
+            INNER JOIN student_term_class stc ON log.student_id = stc.student_id AND log.term_id = stc.term_id
+            WHERE log.term_id = :term_id
+        ";
+        
+        if ($filter_class_id > 0) {
+            $sqlStats .= " AND stc.class_id = :class_id";
+            $paramsStats[':class_id'] = $filter_class_id;
+        }
         if ($filter_week_no > 0) {
+            $sqlStats .= " AND log.week_no = :week_no";
+            $paramsStats[':week_no'] = $filter_week_no;
             $expected_attendances = $base_students;
-            $sqlAttended = "
-                SELECT COUNT(DISTINCT log.student_id) 
-                FROM barcode_checkin_log log 
-                INNER JOIN student_term_class stc ON log.student_id = stc.student_id AND log.term_id = stc.term_id
-                WHERE log.term_id = :term_id AND log.week_no = :week_no
-            ";
-            $sqlLate = "
-                SELECT COUNT(DISTINCT log.student_id) 
-                FROM barcode_checkin_log log 
-                INNER JOIN student_term_class stc ON log.student_id = stc.student_id AND log.term_id = stc.term_id
-                WHERE log.term_id = :term_id AND log.week_no = :week_no AND log.is_late = 1
-            ";
-            $paramsAttended = [':term_id' => $term_id, ':week_no' => $filter_week_no];
-            if ($filter_class_id > 0) {
-                $sqlAttended .= " AND stc.class_id = :class_id";
-                $sqlLate .= " AND stc.class_id = :class_id";
-                $paramsAttended[':class_id'] = $filter_class_id;
-            }
         } else {
             $expected_attendances = $base_students * $current_week;
-            $sqlAttended = "
-                SELECT COUNT(log.id) 
-                FROM barcode_checkin_log log 
-                INNER JOIN student_term_class stc ON log.student_id = stc.student_id AND log.term_id = stc.term_id
-                WHERE log.term_id = :term_id
-            ";
-            $sqlLate = "
-                SELECT COUNT(log.id) 
-                FROM barcode_checkin_log log 
-                INNER JOIN student_term_class stc ON log.student_id = stc.student_id AND log.term_id = stc.term_id
-                WHERE log.term_id = :term_id AND log.is_late = 1
-            ";
-            $paramsAttended = [':term_id' => $term_id];
-            if ($filter_class_id > 0) {
-                $sqlAttended .= " AND stc.class_id = :class_id";
-                $sqlLate .= " AND stc.class_id = :class_id";
-                $paramsAttended[':class_id'] = $filter_class_id;
-            }
         }
 
-        $stmtAttended = $pdo->prepare($sqlAttended);
-        $stmtAttended->execute($paramsAttended);
-        $attended_count = $stmtAttended->fetchColumn();
+        $stmtStats = $pdo->prepare($sqlStats);
+        $stmtStats->execute($paramsStats);
+        $stats = $stmtStats->fetch(PDO::FETCH_ASSOC);
 
-        $stmtLate = $pdo->prepare($sqlLate);
-        $stmtLate->execute($paramsAttended);
-        $late_count = $stmtLate->fetchColumn();
+        if ($stats) {
+            $attended_count = intval($stats['attended_count']);
+            $late_count = intval($stats['late_count']);
+            $ontime_count = $attended_count - $late_count;
+            $leave_count = intval($stats['leave_count']);
+            $hw_prac_count = intval($stats['hw_prac_count']);
+            $hw_proph_count = intval($stats['hw_proph_count']);
+        }
 
         if ($expected_attendances > 0) {
             $attendance_rate = round(($attended_count / $expected_attendances) * 100, 1);
         }
 
-        // 👉 新增：取得詳細打卡紀錄清單時，一併撈取 is_late 欄位
+        // 3. 取得詳細打卡紀錄清單
         $sqlLogs = "
             SELECT 
-                log.scan_time, log.week_no, c.class_name, s.student_no, s.name, s.meetinghall, log.is_manual, log.is_late
+                log.scan_time, log.week_no, c.class_name, s.student_no, s.name, 
+                log.is_manual, log.is_late, log.is_leave, log.hw_practice, log.hw_prophesy
             FROM barcode_checkin_log log
             INNER JOIN students s ON log.student_id = s.id
             INNER JOIN student_term_class stc ON s.id = stc.student_id AND log.term_id = stc.term_id
@@ -159,9 +153,11 @@ try {
         .sidebar a { color: #adb5bd; text-decoration: none; display: block; padding: 10px 20px; margin-bottom: 5px; border-radius: 4px; }
         .sidebar a:hover, .sidebar a.active { background-color: #495057; color: white; }
         .content-area { padding: 30px; }
-        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 4px solid #0d6efd; }
+        .stat-card { background: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 4px solid #0d6efd; height: 100%; }
         .stat-card.success { border-left-color: #198754; }
         .stat-card.warning { border-left-color: #ffc107; }
+        .stat-card.danger { border-left-color: #dc3545; }
+        .stat-card.info { border-left-color: #0dcaf0; }
     </style>
 </head>
 <body>
@@ -173,6 +169,7 @@ try {
             <a href="admin.php" class="active">出勤數據總覽</a>
             <a href="admin_students.php">學生名單管理</a>
             <?php if ($is_super): ?>
+                <a href="admin_import.php">批次匯入名單</a>
                 <a href="admin_settings.php">期別與班級設定</a>
             <?php endif; ?>
             <hr class="text-secondary">
@@ -233,41 +230,64 @@ try {
                 </div>
             </div>
 
-            <div class="row mb-4">
+            <h6 class="text-muted mb-3 fw-bold">基本出勤統計</h6>
+            <div class="row mb-4 g-3">
                 <div class="col-md-3">
                     <div class="stat-card">
-                        <h6 class="text-muted mb-2">應到總人數</h6>
-                        <h3 class="mb-0"><?php echo $base_students; ?> <small class="fs-6 text-muted">人</small></h3>
+                        <h6 class="text-muted mb-2">應到總人次</h6>
+                        <h3 class="mb-0"><?php echo $expected_attendances; ?></h3>
                     </div>
                 </div>
                 <div class="col-md-3">
                     <div class="stat-card success">
-                        <h6 class="text-muted mb-2"><?php echo ($filter_week_no == 0) ? '累計準時人次' : '本週準時人數'; ?></h6>
-                        <h3 class="mb-0 text-success"><?php echo ($attended_count - $late_count); ?></h3>
+                        <h6 class="text-muted mb-2">實到總人次 (準時+已到)</h6>
+                        <h3 class="mb-0 text-success"><?php echo $attended_count; ?></h3>
                     </div>
                 </div>
                 <div class="col-md-3">
-                    <div class="stat-card warning">
-                        <h6 class="text-muted mb-2"><?php echo ($filter_week_no == 0) ? '累計已到人次' : '本週已到人數'; ?></h6>
-                        <h3 class="mb-0 text-warning"><?php echo $late_count; ?></h3>
+                    <div class="stat-card danger">
+                        <h6 class="text-muted mb-2">請假總人次</h6>
+                        <h3 class="mb-0 text-danger"><?php echo $leave_count; ?></h3>
                     </div>
                 </div>
                 <div class="col-md-3">
-                    <div class="stat-card">
-                        <h6 class="text-muted mb-2">整體出席率</h6>
-                        <h3 class="mb-0"><?php echo $attendance_rate; ?> %</h3>
+                    <div class="stat-card info">
+                        <h6 class="text-muted mb-2">綜合出席率</h6>
+                        <h3 class="mb-0 text-info"><?php echo $attendance_rate; ?> %</h3>
+                    </div>
+                </div>
+            </div>
+
+            <h6 class="text-muted mb-3 fw-bold">學習與準時品質</h6>
+            <div class="row mb-4 g-3">
+                <div class="col-md-4">
+                    <div class="stat-card success">
+                        <h6 class="text-muted mb-2">準時人次</h6>
+                        <h3 class="mb-0 text-success"><?php echo $ontime_count; ?></h3>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stat-card bg-white border-primary border-start">
+                        <h6 class="text-primary mb-2">操練表 繳交總數</h6>
+                        <h3 class="mb-0"><?php echo $hw_prac_count; ?> <small class="fs-6 text-muted">份</small></h3>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="stat-card bg-white border-info border-start">
+                        <h6 class="text-info mb-2 text-dark">申言稿 繳交總數</h6>
+                        <h3 class="mb-0"><?php echo $hw_proph_count; ?> <small class="fs-6 text-muted">份</small></h3>
                     </div>
                 </div>
             </div>
 
             <div class="card shadow-sm border-0">
                 <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0">打卡紀錄明細</h5>
+                    <h5 class="mb-0">打卡與作業紀錄明細</h5>
                     <small class="text-muted">共 <?php echo count($logs); ?> 筆紀錄</small>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
-                        <table class="table table-striped table-hover mb-0">
+                        <table class="table table-striped table-hover mb-0 align-middle">
                             <thead class="table-light">
                                 <tr>
                                     <th>打卡時間</th>
@@ -276,6 +296,7 @@ try {
                                     <th>學號</th>
                                     <th>姓名</th>
                                     <th>報到狀態</th>
+                                    <th>作業繳交</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -286,25 +307,36 @@ try {
                                             <td><span class="badge bg-secondary">第 <?php echo htmlspecialchars($log['week_no']); ?> 週</span></td>
                                             <td><?php echo htmlspecialchars($log['class_name']); ?></td>
                                             <td class="font-monospace"><?php echo htmlspecialchars($log['student_no']); ?></td>
-                                            <td><?php echo htmlspecialchars($log['name']); ?></td>
+                                            <td class="fw-bold"><?php echo htmlspecialchars($log['name']); ?></td>
                                             <td>
-                                                <?php if ($log['is_manual'] == 1): ?>
-                                                    <span class="badge bg-info text-dark">手動補簽</span>
+                                                <?php if ($log['is_leave'] == 1): ?>
+                                                    <span class="badge bg-danger">請假</span>
+                                                <?php elseif ($log['is_late'] == 1): ?>
+                                                    <span class="badge bg-warning text-dark">已到</span>
                                                 <?php else: ?>
-                                                    <span class="badge bg-secondary">條碼掃描</span>
+                                                    <span class="badge bg-success">準時</span>
                                                 <?php endif; ?>
-
-                                                <?php if ($log['is_late'] == 1): ?>
-                                                    <span class="badge bg-warning text-dark ms-1">已到</span>
-                                                <?php else: ?>
-                                                    <span class="badge bg-success ms-1">準時</span>
+                                                
+                                                <?php if ($log['is_manual'] == 1 && $log['is_leave'] == 0): ?>
+                                                    <span class="badge bg-light text-secondary border ms-1">補簽</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td>
+                                                <?php if ($log['hw_practice'] == 1): ?>
+                                                    <span class="badge bg-primary">操練表</span>
+                                                <?php endif; ?>
+                                                <?php if ($log['hw_prophesy'] == 1): ?>
+                                                    <span class="badge bg-info text-dark">申言稿</span>
+                                                <?php endif; ?>
+                                                <?php if ($log['hw_practice'] == 0 && $log['hw_prophesy'] == 0): ?>
+                                                    <span class="text-muted">-</span>
                                                 <?php endif; ?>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
                                 <?php else: ?>
                                     <tr>
-                                        <td colspan="6" class="text-center py-4 text-muted">此篩選條件下尚無任何報到紀錄</td>
+                                        <td colspan="7" class="text-center py-4 text-muted">此篩選條件下尚無任何紀錄</td>
                                     </tr>
                                 <?php endif; ?>
                             </tbody>
