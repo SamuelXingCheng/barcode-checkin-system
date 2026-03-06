@@ -172,6 +172,9 @@ try {
             <h5 class="px-2 mb-4">報到系統後台</h5>
             <a href="admin.php" class="active">出勤數據總覽</a>
             <a href="admin_students.php">學生名單管理</a>
+            <?php if ($is_super): ?>
+                <a href="admin_settings.php">期別與班級設定</a>
+            <?php endif; ?>
             <hr class="text-secondary">
             <a href="checkin.php" class="text-info">返回報到櫃台</a>
             <a href="logout.php" class="text-danger">登出系統</a>
